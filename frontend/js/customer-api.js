@@ -82,7 +82,11 @@ const CustomerAPI = {
                 if (typeof whenServerWarmupReady === 'function' && attempt === 0) {
                     await whenServerWarmupReady(20000);
                 }
-                const res = await fetch(this.url(path), { ...options, headers, cache: 'no-store' });
+                const fetchOpts = { ...options, headers };
+                if (!fetchOpts.cache && (options.method && options.method.toUpperCase() !== 'GET')) {
+                    fetchOpts.cache = 'no-store';
+                }
+                const res = await fetch(this.url(path), fetchOpts);
                 let data = null;
                 const text = await res.text();
                 if (text) {

@@ -70,11 +70,12 @@ function whenServerWarmupReady(timeoutMs = 25000) {
     return _warmupReadyPromise;
 }
 
-async function fetchJsonWithRetry(url, { retries = 5, baseDelayMs = 350 } = {}) {
+async function fetchJsonWithRetry(url, { retries = 5, baseDelayMs = 350, cacheMode = undefined } = {}) {
     let lastError = null;
+    const fetchOpts = cacheMode ? { cache: cacheMode } : {};
     for (let attempt = 0; attempt < retries; attempt += 1) {
         try {
-            const res = await fetch(url, { cache: 'no-store' });
+            const res = await fetch(url, fetchOpts);
             if (res.status === 502 || res.status === 503 || res.status === 504) {
                 lastError = new Error(`Temporary upstream error (${res.status})`);
                 await sleepMs(baseDelayMs * (attempt + 1));
