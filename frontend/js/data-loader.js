@@ -2,15 +2,11 @@ const ALL_PRODUCTS = [];
 const PRODUCT_BY_NAME = new Map();
 const PRODUCT_BY_DISPLAY = new Map();
 const PRODUCT_BY_ID = new Map();
-let uniquePackTypes = [];
 let uniqueLocationIds = [];
 
 let CATEGORY_STATS = [];
 let SUBCATEGORY_STATS = [];
 let PRODUCT_IMAGE_BY_ID = {};
-let PRODUCT_IMAGE_BY_NAME = {};
-let PRODUCT_HOME_IMAGE_BY_ID = {};
-let PRODUCT_HOME_IMAGE_BY_NAME = {};
 let PROMOTION_BANNER_IMAGES = [];
 let PROMOTION_BANNERS = [];
 
@@ -34,6 +30,65 @@ function getPromotionBanners() {
 const API_BASE = '';
 let _dataReadyPromise = null;
 let _dataReady = false;
+let _metadataReadyPromise = null;
+let _metadataReady = false;
+let _homeProductsReadyPromise = null;
+let _warmupReadyPromise = null;
+
+function sleepMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Wait until /api/v1/health reports db_ready (or warmup finished/errored).
+ * Keeps the page usable while Neon cold-starts.
+ */
+function whenServerWarmupReady(timeoutMs = 25000) {
+    if (_warmupReadyPromise) return _warmupReadyPromise;
+    _warmupReadyPromise = (async () => {
+        const started = Date.now();
+        let attempt = 0;
+        while (Date.now() - started < timeoutMs) {
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/health`, { cache: 'no-store' });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.db_ready || data.warmup === 'ready' || data.warmup === 'error') {
+                        return data;
+                    }
+                }
+            } catch (_) {
+                /* server still binding */
+            }
+            attempt += 1;
+            await sleepMs(Math.min(250 + attempt * 150, 1200));
+        }
+        return null;
+    })().finally(() => {
+        /* allow a later retry if the first wait timed out */
+    });
+    return _warmupReadyPromise;
+}
+
+async function fetchJsonWithRetry(url, { retries = 5, baseDelayMs = 350 } = {}) {
+    let lastError = null;
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+        try {
+            const res = await fetch(url, { cache: 'no-store' });
+            if (res.status === 502 || res.status === 503 || res.status === 504) {
+                lastError = new Error(`Temporary upstream error (${res.status})`);
+                await sleepMs(baseDelayMs * (attempt + 1));
+                continue;
+            }
+            if (!res.ok) throw new Error(`Request failed (${res.status}) for ${url}`);
+            return await res.json();
+        } catch (err) {
+            lastError = err;
+            await sleepMs(baseDelayMs * (attempt + 1));
+        }
+    }
+    throw lastError || new Error(`Request failed for ${url}`);
+}
 
 function formatDisplayName(str) {
     if (!str) return '';
@@ -71,46 +126,65 @@ function normalizeCategoryName(str) {
     return name.charAt(0).toUpperCase() + name.slice(1);
 }
 
+function normalizeApiProduct(product) {
+    return {
+        productId: product.productId,
+        categoryId: product.categoryId,
+        categoryName: product.categoryName,
+        subCategoryId: product.subCategoryId,
+        subCategoryName: product.subCategoryName,
+        productName: product.productName,
+        displayName: product.displayName || formatDisplayName(product.productName),
+        weightKG: product.weightKG,
+        packType: product.packType || '',
+        locationId: 52,
+        salesUnitTypeId: 1,
+        flaggedCategoryMismatch: false,
+        productDescription: product.productDescription || '',
+        isFeatured: product.isFeatured === true,
+        isBestSeller: product.isBestSeller === true,
+        isNewArrival: product.isNewArrival === true,
+        isHotOffer: product.isHotOffer === true,
+        isExclusive: product.isExclusive === true,
+        discountPercent: parseInt(product.discountPercent, 10) || 0,
+        sellingPrice: Number(product.sellingPrice) || 0,
+        kitchenCulture: product.kitchenCulture || null,
+        primaryImageUrl: product.primaryImageUrl || '',
+    };
+}
+
 function buildProductIndexFromApi(products) {
     ALL_PRODUCTS.length = 0;
 
     products.forEach(product => {
         if (HIDDEN_CATEGORIES.has(product.categoryName)) return;
-        ALL_PRODUCTS.push({
-            productId: product.productId,
-            categoryId: product.categoryId,
-            categoryName: product.categoryName,
-            subCategoryId: product.subCategoryId,
-            subCategoryName: product.subCategoryName,
-            productName: product.productName,
-            displayName: product.displayName || formatDisplayName(product.productName),
-            weightKG: product.weightKG,
-            packType: product.packType || '',
-            locationId: 52,
-            salesUnitTypeId: 1,
-            flaggedCategoryMismatch: false,
-            productDescription: product.productDescription || '',
-            isFeatured: product.isFeatured === true,
-            isBestSeller: product.isBestSeller === true,
-            isNewArrival: product.isNewArrival === true,
-            isHotOffer: product.isHotOffer === true,
-            isExclusive: product.isExclusive === true,
-            discountPercent: parseInt(product.discountPercent, 10) || 0,
-            kitchenCulture: product.kitchenCulture || null,
-        });
+        ALL_PRODUCTS.push(normalizeApiProduct(product));
     });
 
-    const packSet = new Set();
     const locSet = new Set();
 
     ALL_PRODUCTS.forEach(p => {
-        if (p.packType) packSet.add(p.packType);
         locSet.add(p.locationId);
     });
 
-    uniquePackTypes = ['BAG', 'BOX', 'BUNCH', 'LOOSE', 'PACK'].filter(pt => packSet.has(pt));
     uniqueLocationIds = Array.from(locSet).sort((a, b) => a - b);
     rebuildProductLookup();
+}
+
+function mergeProductsIntoCatalog(products) {
+    if (!Array.isArray(products) || !products.length) return;
+
+    let added = false;
+    products.forEach(product => {
+        if (HIDDEN_CATEGORIES.has(product.categoryName)) return;
+        const normalized = normalizeApiProduct(product);
+        if (PRODUCT_BY_NAME.has(normalized.productName)) return;
+        ALL_PRODUCTS.push(normalized);
+        added = true;
+    });
+
+    if (added) rebuildProductLookup();
+    buildImageMapsFromProducts(products);
 }
 
 function buildProductIndex() {
@@ -138,19 +212,11 @@ function rebuildProductLookup() {
 
 function buildImageMaps(byId, products) {
     PRODUCT_IMAGE_BY_ID = { ...(byId || {}) };
-    PRODUCT_IMAGE_BY_NAME = {};
-    PRODUCT_HOME_IMAGE_BY_ID = { ...(byId || {}) };
-    PRODUCT_HOME_IMAGE_BY_NAME = {};
-    products.forEach(p => {
-        const url = byId[p.productId] || p.primaryImageUrl || '';
-        if (url) {
-            PRODUCT_IMAGE_BY_ID[p.productId] = url;
-            PRODUCT_IMAGE_BY_ID[String(p.productId)] = url;
-            PRODUCT_HOME_IMAGE_BY_ID[p.productId] = url;
-            PRODUCT_HOME_IMAGE_BY_ID[String(p.productId)] = url;
-            PRODUCT_IMAGE_BY_NAME[p.productName] = url;
-            PRODUCT_HOME_IMAGE_BY_NAME[p.productName] = url;
-        }
+    (products || []).forEach(p => {
+        const url = (byId && byId[p.productId]) || p.primaryImageUrl || '';
+        if (!url || p.productId == null) return;
+        PRODUCT_IMAGE_BY_ID[p.productId] = url;
+        PRODUCT_IMAGE_BY_ID[String(p.productId)] = url;
     });
 }
 
@@ -169,22 +235,73 @@ const HIDDEN_CATEGORIES = new Set([
     'oyster', 'lottery', 'vape', 'LOTTERY PAYOUT', 'PAYPOINT'
 ]);
 
+// Short-lived browser cache so revisits feel instant (same UI/API shape)
+const CATALOG_CACHE_TTL_MS = 8 * 60 * 1000;
+const CATALOG_META_CACHE_KEY = 'gms_catalog_meta_v2';
+const CATALOG_HOME_CACHE_KEY = 'gms_catalog_home_v2';
+const CATALOG_PRODUCTS_CACHE_KEY = 'gms_catalog_products_v2';
+
+function _readCatalogCache(key) {
+    try {
+        const raw = sessionStorage.getItem(key);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (Date.now() - (parsed.ts || 0) > CATALOG_CACHE_TTL_MS) return null;
+        return parsed.data;
+    } catch (_) {
+        return null;
+    }
+}
+
+function _writeCatalogCache(key, data) {
+    try {
+        sessionStorage.setItem(key, JSON.stringify({ ts: Date.now(), data }));
+    } catch (_) {
+        // Quota exceeded — ignore; network path still works
+    }
+}
+
 async function fetchCatalogMetadata() {
-    const res = await fetch(`${API_BASE}/api/v1/catalog/metadata`);
-    if (!res.ok) throw new Error(`Catalog metadata failed (${res.status})`);
-    return res.json();
+    const cached = _readCatalogCache(CATALOG_META_CACHE_KEY);
+    if (cached) return cached;
+    await whenServerWarmupReady();
+    const data = await fetchJsonWithRetry(`${API_BASE}/api/v1/catalog/metadata`);
+    _writeCatalogCache(CATALOG_META_CACHE_KEY, data);
+    return data;
 }
 
 async function fetchCatalogProductsBulk() {
-    const res = await fetch(`${API_BASE}/api/v1/catalog/products-bulk`);
-    if (!res.ok) throw new Error(`Catalog products failed (${res.status})`);
-    return res.json();
+    const cached = _readCatalogCache(CATALOG_PRODUCTS_CACHE_KEY);
+    if (cached) return cached;
+    await whenServerWarmupReady();
+    const data = await fetchJsonWithRetry(`${API_BASE}/api/v1/catalog/products-bulk`);
+    _writeCatalogCache(CATALOG_PRODUCTS_CACHE_KEY, data);
+    return data;
+}
+
+async function fetchHomeProducts() {
+    const cached = _readCatalogCache(CATALOG_HOME_CACHE_KEY);
+    if (cached) return cached;
+    await whenServerWarmupReady();
+    const data = await fetchJsonWithRetry(`${API_BASE}/api/v1/catalog/home-products`);
+    _writeCatalogCache(CATALOG_HOME_CACHE_KEY, data);
+    return data;
+}
+
+async function fetchCartProducts(productNames) {
+    const names = Array.from(new Set((productNames || []).map(name => String(name || '').trim()).filter(Boolean)));
+    if (!names.length) return [];
+    await whenServerWarmupReady();
+    const data = await fetchJsonWithRetry(
+        `${API_BASE}/api/v1/catalog/cart-products?names=${encodeURIComponent(names.join(','))}`
+    );
+    return (data && data.products) || [];
 }
 
 async function fetchCatalogBootstrap() {
-    const res = await fetch(`${API_BASE}/api/v1/catalog/bootstrap`);
-    if (!res.ok) throw new Error(`Catalog bootstrap failed (${res.status})`);
-    return res.json();
+    await whenServerWarmupReady();
+    return fetchJsonWithRetry(`${API_BASE}/api/v1/catalog/bootstrap`);
 }
 
 function applyCatalogMetadata(data) {
@@ -200,6 +317,7 @@ function applyCatalogMetadata(data) {
     if (document.body.dataset.page === 'home' && typeof refreshHeroSlider === 'function') {
         refreshHeroSlider();
     }
+    _metadataReady = true;
     document.dispatchEvent(new CustomEvent('gms:metadata-ready'));
 }
 
@@ -208,8 +326,7 @@ function finalizeCatalogLoad() {
     document.dispatchEvent(new CustomEvent('gms:catalog-ready'));
 }
 
-function loadCatalogFromSplit(metadata, productsPayload) {
-    applyCatalogMetadata(metadata);
+function loadCatalogProductsOnly(productsPayload) {
     const products = (productsPayload && productsPayload.products) || [];
     buildImageMapsFromProducts(products);
     buildProductIndexFromApi(products);
@@ -224,19 +341,29 @@ function loadCatalogFromBootstrap(data) {
     finalizeCatalogLoad();
 }
 
-async function fetchCatalogSplit() {
-    const [metadata, productsPayload] = await Promise.all([
-        fetchCatalogMetadata(),
-        fetchCatalogProductsBulk(),
-    ]);
-    return { metadata, productsPayload };
+function whenMetadataReady() {
+    if (_metadataReady) return Promise.resolve();
+    if (!_metadataReadyPromise) {
+        _metadataReadyPromise = fetchCatalogMetadata()
+            .then(applyCatalogMetadata)
+            .catch(err => {
+                _metadataReadyPromise = null;
+                console.error('Failed to load catalog metadata:', err);
+                throw err;
+            });
+    }
+    return _metadataReadyPromise;
 }
 
 function whenCatalogReady() {
     if (_dataReady) return Promise.resolve();
     if (!_dataReadyPromise) {
-        _dataReadyPromise = fetchCatalogSplit()
-            .then(({ metadata, productsPayload }) => loadCatalogFromSplit(metadata, productsPayload))
+        // Metadata + products in parallel (metadata is not required to start products fetch)
+        _dataReadyPromise = Promise.all([
+            whenMetadataReady(),
+            fetchCatalogProductsBulk(),
+        ])
+            .then(([, productsPayload]) => loadCatalogProductsOnly(productsPayload))
             .catch(err => {
                 console.warn('Split catalog load failed, falling back to bootstrap:', err);
                 return fetchCatalogBootstrap()
@@ -249,6 +376,22 @@ function whenCatalogReady() {
             });
     }
     return _dataReadyPromise;
+}
+
+function whenHomeProductsReady() {
+    if (ALL_PRODUCTS.length) return Promise.resolve();
+    if (!_homeProductsReadyPromise) {
+        _homeProductsReadyPromise = fetchHomeProducts()
+            .then(payload => {
+                mergeProductsIntoCatalog((payload && payload.products) || []);
+            })
+            .catch(err => {
+                _homeProductsReadyPromise = null;
+                console.error('Failed to load homepage products:', err);
+                throw err;
+            });
+    }
+    return _homeProductsReadyPromise;
 }
 
 function getCategoryStats() {

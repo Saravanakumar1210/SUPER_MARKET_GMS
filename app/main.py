@@ -1,7 +1,6 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,9 +9,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
+from app.core import warmup as startup_warmup
 from app.database import AsyncSessionLocal
 from app.paths import FRONTEND_DIR, PRODUCT_UPLOADS_DIR
-from app.routers import admin, auth, catalog, contact, newsletter
+from app.routers import admin, auth, cart, catalog, contact
 
 settings = get_settings()
 logger = logging.getLogger("gms")
@@ -23,18 +23,47 @@ HTML_PAGES = [
     "basket.html",
     "about.html",
     "contact.html",
+    "login.html",
+    "signup.html",
+    "account.html",
 ]
 
 
+async def _warmup_db() -> None:
+    """Ensure auth schema exists and warm the DB pool."""
+    from sqlalchemy import text
+    from app.core.db_indexes import ensure_admin_account, ensure_required_site_schema, ensure_user_auth_schema
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(text("SELECT 1"))
+        await ensure_user_auth_schema(db)
+        await ensure_required_site_schema(db)
+        await ensure_admin_account(db)
+    startup_warmup.mark_db_ready()
+    logger.info("Database ready (auth schema + connection warmup).")
+
+
 async def _warmup_catalog_cache() -> None:
-    """Pre-populate the in-memory catalog cache so the first visitor never waits."""
+    """Pre-populate home-page caches (non-fatal if Neon is still waking)."""
     try:
-        from app.routers.catalog import _load_catalog_metadata, _load_active_products
-        async with AsyncSessionLocal() as db:
-            await _load_catalog_metadata(db)
-        async with AsyncSessionLocal() as db:
-            await _load_active_products(db)
-        logger.info("Catalog cache warmed up on startup.")
+        from app.routers.catalog import (
+            _load_active_cultures,
+            _load_active_products,
+            _load_catalog_metadata,
+            _load_featured_testimonials,
+        )
+
+        async def warm(loader, *args, **kwargs):
+            async with AsyncSessionLocal() as db:
+                return await loader(db, *args, **kwargs)
+
+        await asyncio.gather(
+            warm(_load_catalog_metadata),
+            warm(_load_active_products, home_only=True),
+            warm(_load_active_cultures),
+            warm(_load_featured_testimonials),
+        )
+        logger.info("Home-page caches warmed up on startup.")
     except Exception as exc:
         logger.warning("Startup cache warmup failed (will retry on first request): %s", exc)
 
@@ -53,11 +82,48 @@ async def _warmup_admin_cache() -> None:
         logger.warning("Admin cache warmup failed (will retry on first request): %s", exc)
 
 
+async def _run_startup_warmup() -> None:
+    """DB + cache warmup with a few retries (Neon serverless cold starts)."""
+    delays = (0.0, 1.5, 3.0, 5.0)
+    last_exc: Exception | None = None
+    for attempt, delay in enumerate(delays, start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            await _warmup_db()
+            await _warmup_catalog_cache()
+            await _warmup_admin_cache()
+            startup_warmup.mark_warmup_complete()
+            logger.info("Background startup warmup complete (attempt %s).", attempt)
+            return
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "Startup warmup attempt %s/%s failed: %s",
+                attempt,
+                len(delays),
+                exc,
+            )
+    startup_warmup.mark_warmup_complete(error=str(last_exc) if last_exc else "unknown")
+    logger.error("Startup warmup gave up after retries: %s", last_exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    asyncio.create_task(_warmup_catalog_cache())
-    asyncio.create_task(_warmup_admin_cache())
-    yield
+    # Bind and accept browsers immediately. HTML/CSS/JS do not need the DB.
+    # Previously we awaited Neon + cache here, so the port stayed closed and
+    # Firefox showed "Unable to connect" until the user clicked Try Again.
+    task = asyncio.create_task(_run_startup_warmup(), name="gms-startup-warmup")
+    app.state.warmup_task = task
+    try:
+        yield
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(
@@ -79,16 +145,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def catalog_browser_cache(request: Request, call_next):
+    """Allow short browser caching of public catalog GETs — faster revisits."""
+    response = await call_next(request)
+    path = request.url.path
+    if request.method == "GET" and path.startswith("/api/v1/catalog/"):
+        # Skip cart-products (query-specific) — still fine to cache briefly
+        response.headers.setdefault("Cache-Control", "public, max-age=120")
+    return response
+
+
 app.include_router(catalog.router)
 app.include_router(auth.router)
-app.include_router(newsletter.router)
+app.include_router(cart.router)
 app.include_router(contact.router)
 app.include_router(admin.router)
 
 
 @app.get("/api/v1/health")
 async def health():
-    return {"status": "ok", "service": "gms-world-foods"}
+    return {
+        "status": "ok",
+        "service": "gms-world-foods",
+        **startup_warmup.warmup_payload(),
+    }
 
 
 @app.exception_handler(404)
@@ -118,10 +200,20 @@ async def serve_index():
     return FileResponse(FRONTEND_DIR / "index.html")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def serve_favicon():
+    """Always expose the GMS logo as the browser tab icon."""
+    ico = FRONTEND_DIR / "favicon.ico"
+    if ico.is_file():
+        return FileResponse(ico, media_type="image/x-icon")
+    png = FRONTEND_DIR / "assets" / "favicon-32.png"
+    return FileResponse(png, media_type="image/png")
+
+
 @app.get("/admin")
 @app.get("/admin.html")
-async def serve_admin_portal():
-    """Admin portal — served on the same port as the customer site."""
+async def serve_admin_tools():
+    """Role-gated store management UI — same site as the storefront."""
     return FileResponse(FRONTEND_DIR / "admin.html")
 
 
@@ -137,13 +229,17 @@ for page in HTML_PAGES[1:]:
     app.get(route)(make_handler(page))
 
 
-@app.api_route("/api/{api_path:path}", methods=["POST", "PUT", "PATCH", "DELETE"])
+@app.api_route(
+    "/api/{api_path:path}",
+    methods=["POST", "PUT", "PATCH", "DELETE"],
+    include_in_schema=False,
+)
 async def api_unmatched(api_path: str):
     """Return 404 for unknown API mutations (avoids SPA catch-all 405)."""
     return JSONResponse(status_code=404, content={"detail": "Not found"})
 
 
-@app.get("/{page_path:path}")
+@app.get("/{page_path:path}", include_in_schema=False)
 async def spa_fallback(page_path: str):
     """Serve HTML pages without .html extension if file exists."""
     if page_path.startswith("api/"):

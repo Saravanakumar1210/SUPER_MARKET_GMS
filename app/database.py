@@ -15,6 +15,8 @@ engine = create_async_engine(
     max_overflow=10,      # extra connections allowed under burst load
     pool_timeout=30,      # seconds to wait for a free connection
     pool_recycle=1800,    # recycle connections every 30 min (avoids Neon idle timeouts)
+    # Fail fast on hung Neon connects instead of blocking the event loop forever
+    connect_args={"timeout": 20, "command_timeout": 60},
 )
 
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

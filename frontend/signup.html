@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Up - GMS World Foods Ltd</title>
+    <meta name="description" content="Create your GMS World Foods customer account.">
+    <link rel="icon" href="/assets/favicon-32.png" type="image/png" sizes="32x32">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <link rel="stylesheet" href="css/main.css?v=89">
+    <style>
+        /* Auth pages: never inherit store header padding (defeats mobile cache) */
+        html, body.customer-login-body {
+            margin: 0 !important;
+            padding: 0 !important;
+            padding-top: 0 !important;
+            background: #0d1b2a !important;
+            overflow-x: hidden !important;
+        }
+        body.customer-login-body .customer-login-screen {
+            position: fixed !important;
+            inset: 0 !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            min-height: 100vh !important;
+            min-height: 100dvh !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            padding: 20px 16px !important;
+            box-sizing: border-box !important;
+            overflow-y: auto !important;
+            margin: 0 !important;
+        }
+        body.customer-login-body .customer-login-card {
+            width: 100% !important;
+            max-width: 520px !important;
+            margin: auto !important;
+            box-sizing: border-box !important;
+        }
+        body.customer-login-body .phone-input-row {
+            display: grid !important;
+            grid-template-columns: 1fr !important;
+            gap: 10px !important;
+            width: 100% !important;
+        }
+    </style>
+</head>
+<body data-page="signup" class="customer-login-body">
+
+    <div class="login-screen customer-login-screen">
+        <div class="login-card customer-login-card customer-login-card--signup">
+            <div class="login-logo">
+                <img src="https://res.cloudinary.com/dgsnwhyah/image/upload/v1782933745/gms-world-foods/company-logo.png" alt="GMS World Foods" width="64" height="64">
+                <h1>GMS World Foods</h1>
+                <p>Create Account</p>
+            </div>
+
+            <form id="signup-form" class="customer-login-form" novalidate>
+                <div class="form-group">
+                    <label for="signup-name">Full name</label>
+                    <input type="text" id="signup-name" name="name" required autocomplete="name" placeholder="Your full name">
+                </div>
+                <div class="form-group">
+                    <label for="signup-email">Email</label>
+                    <input type="email" id="signup-email" name="email" required autocomplete="email" placeholder="you@example.com">
+                </div>
+                <div class="form-group">
+                    <label for="signup-phone">Phone number</label>
+                    <div class="phone-input-row">
+                        <select id="signup-phone-country" name="phone_country" aria-label="Country code"></select>
+                        <input type="tel" id="signup-phone" name="phone" required autocomplete="tel" placeholder="7123456789">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="signup-address">Address</label>
+                    <textarea id="signup-address" name="address" rows="3" required autocomplete="street-address" placeholder="House number, street, town, postcode"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="signup-password">Password</label>
+                    <div class="pass-wrap">
+                        <input type="password" id="signup-password" name="password" required autocomplete="new-password" placeholder="Create a strong password">
+                        <button type="button" class="pass-toggle" data-target="signup-password" aria-label="Show password">
+                            <i class="fa-solid fa-eye" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                    <div class="password-rules-wrap password-rules-wrap--compact">
+                        <p class="password-rules-title">Password must contain:</p>
+                        <ul id="password-checklist" class="password-rules"></ul>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="signup-password-confirm">Confirm password</label>
+                    <div class="pass-wrap">
+                        <input type="password" id="signup-password-confirm" name="password_confirm" required autocomplete="new-password" placeholder="Re-enter your password">
+                        <button type="button" class="pass-toggle" data-target="signup-password-confirm" aria-label="Show password">
+                            <i class="fa-solid fa-eye" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                </div>
+                <p id="signup-error" class="login-error hidden" role="alert"></p>
+                <button type="submit" class="btn-login">
+                    <i class="fa-solid fa-user-check" aria-hidden="true"></i> Create Account
+                </button>
+            </form>
+
+            <p class="login-forgot">Already have an account? <a href="login.html">Sign in</a></p>
+            <p class="login-hint"><a href="index.html">← Back to home</a></p>
+        </div>
+    </div>
+
+    <script src="js/site-settings.js?v=7"></script>
+    <script src="js/customer-api.js?v=4"></script>
+    <script src="js/shopping-store.js?v=10"></script>
+    <script src="js/admin-api.js?v=26"></script>
+    <script src="js/customer-auth.js?v=17"></script>
+</body>
+</html>

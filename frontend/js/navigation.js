@@ -40,7 +40,33 @@ function initNavigation() {
     buildSubNavCategoryDropdown();
     initSubNavCategories();
     initBrowseSectionNav();
+    initFixedMobileHeaderOffset();
     if (typeof updateHeaderBadges === 'function') updateHeaderBadges();
+}
+
+/** Keep body padding in sync with fixed mobile header height. */
+function syncMobileHeaderOffset() {
+    const stack = document.getElementById('header-stack');
+    if (!stack) return;
+
+    if (window.matchMedia('(max-width: 767px)').matches) {
+        document.documentElement.style.setProperty(
+            '--mobile-header-offset',
+            `${stack.offsetHeight}px`
+        );
+    } else {
+        document.documentElement.style.removeProperty('--mobile-header-offset');
+    }
+}
+
+function initFixedMobileHeaderOffset() {
+    syncMobileHeaderOffset();
+    window.addEventListener('resize', syncMobileHeaderOffset);
+    window.addEventListener('orientationchange', syncMobileHeaderOffset);
+    if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(syncMobileHeaderOffset).catch(() => {});
+    }
+    requestAnimationFrame(syncMobileHeaderOffset);
 }
 
 function getHeaderScrollOffset() {
@@ -94,15 +120,21 @@ function resetHomePageScroll() {
     if ('scrollRestoration' in history) {
         history.scrollRestoration = 'manual';
     }
-    if (window.location.hash) {
-        history.replaceState(null, '', window.location.pathname + window.location.search);
+    const hash = (window.location.hash || '').replace(/^#/, '').trim();
+    // Preserve deep-links like #categories / #cultures — scroll after layout paints
+    if (hash) {
+        const scrollToHash = () => {
+            if (typeof scrollToHomeSection === 'function') {
+                scrollToHomeSection(hash);
+            } else {
+                const el = document.getElementById(hash);
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        };
+        requestAnimationFrame(() => setTimeout(scrollToHash, 50));
+        return;
     }
     window.scrollTo(0, 0);
-}
-
-function handleBrowseHashScroll() {
-    /* Intentionally no-op on load — home page always opens at the top. */
-    resetHomePageScroll();
 }
 
 function openDrawer(drawer, overlay, toggle) {
@@ -176,6 +208,7 @@ function buildSubNavCategoryDropdown() {
         <div class="sub-nav-dropdown-grid">
             ${cats.map(cat => {
                 const ph = getCategoryPlaceholder(cat.CategoryName);
+                const imageUrl = getCategoryImage(cat.CategoryName);
                 const catSubs = subsByParent[cat.ProductCategoryID] || [];
                 const subLinks = catSubs.slice(0, 6).map(s => `
                     <a class="sub-nav-sub-link" href="products.html?category=${encodeURIComponent(cat.CategoryName)}&subcategory=${encodeURIComponent(s.SubCategoryName)}">
@@ -190,7 +223,9 @@ function buildSubNavCategoryDropdown() {
                     <div class="sub-nav-cat-col">
                         <a class="sub-nav-cat-heading" href="products.html?category=${encodeURIComponent(cat.CategoryName)}">
                             <span class="sub-nav-cat-icon" style="background:${ph.gradient}">
-                                <i class="fa-solid ${ph.icon}"></i>
+                                <img src="${escapeHtmlAttr(imageUrl)}" alt="" loading="lazy" decoding="async"
+                                    onerror="this.hidden=true;this.nextElementSibling.hidden=false">
+                                <i class="fa-solid ${ph.icon}" hidden aria-hidden="true"></i>
                             </span>
                             <span>
                                 <strong>${cat.CategoryName}</strong>
@@ -225,11 +260,12 @@ function initSubNavCategories() {
         }
     });
 
-    dropdown.querySelectorAll('a').forEach(link => {
-        link.addEventListener('click', () => {
+    // Event delegation so links still close the menu after re-renders
+    dropdown.addEventListener('click', (e) => {
+        if (e.target.closest('a')) {
             wrap.classList.remove('open');
             btn.setAttribute('aria-expanded', 'false');
-        });
+        }
     });
 }
 

@@ -1,6 +1,5 @@
 import json
 import re
-import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -8,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.config import get_settings
 from app.core.banner_order import (
@@ -32,22 +31,33 @@ from app.core.culture_order import (
     unlink_culture,
 )
 from app.core.kitchen_cultures import KITCHEN_CULTURES, normalize_kitchen_culture
-from app.core.site_settings import DEFAULT_SITE_SETTINGS, SITE_SETTING_KEYS, load_public_site_settings
+from app.core.site_settings import SITE_SETTING_KEYS, load_public_site_settings
 from app.core.catalog import (
     admin_cache_get,
     admin_cache_set,
     admin_product_to_dict,
+    admin_product_row_to_dict,
     invalidate_admin_site_cache,
     invalidate_catalog_cache,
     primary_image,
 )
 from app.core.helpers import require_admin
 from app.database import get_db
-from app.models import Category, CultureBanner, NewsletterSubscriber, Product, ProductImage, SiteBanner, SiteSetting, Subcategory, Testimonial, User
+from app.models import Category, CultureBanner, Product, ProductImage, SiteBanner, SiteSetting, Subcategory, Testimonial, User
 from app.models.site import ContactSubmission
 from app.core.cloudinary_storage import delete_by_url, upload_upload_file
 from app.paths import PRODUCT_UPLOADS_DIR
-from app.schemas import AdminNewsletterCreateIn, AdminNewsletterUpdateIn, AdminStatsOut, CouponOut
+from app.schemas import (
+    AdminBulkDiscountIn,
+    AdminBulkProductActionIn,
+    AdminCategoryIn,
+    AdminClearDiscountsIn,
+    AdminProductImageIn,
+    AdminProductIn,
+    AdminStatsOut,
+    AdminSubcategoryIn,
+    CouponOut,
+)
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -56,35 +66,26 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_BANNER_BYTES = 12 * 1024 * 1024
 
 
-def _admin_product_row_dict(row) -> dict:
-    """Slim product payload for admin list views (no image gallery)."""
-    price = float(row.selling_price)
-    return {
-        "productId": row.product_id,
-        "categoryId": row.category_id,
-        "categoryName": row.category_name or "",
-        "subCategoryId": row.subcategory_id,
-        "subCategoryName": row.subcategory_name or "",
-        "productName": row.product_name,
-        "displayName": row.product_name,
-        "brand": row.brand or "",
-        "slug": row.slug,
-        "sellingPrice": price,
-        "comparePrice": float(row.compare_price) if row.compare_price is not None else None,
-        "discountPercent": int(row.discount_percent or 0),
-        "stockQuantity": int(row.stock_quantity or 0),
-        "minOrderQty": int(row.min_order_qty or 1),
-        "isWholesale": bool(row.is_wholesale),
-        "isActive": bool(row.is_active),
-        "isFeatured": bool(row.is_featured),
-        "isBestSeller": bool(row.is_best_seller),
-        "isNewArrival": bool(row.is_new_arrival),
-        "isHotOffer": bool(row.is_hot_offer),
-        "isExclusive": bool(row.is_exclusive),
-        "kitchenCulture": row.kitchen_culture or "",
-        "primaryImageUrl": row.primary_image_url,
-        "images": [],
-    }
+def _payload(body) -> dict:
+    return body.model_dump(exclude_unset=True) if hasattr(body, "model_dump") else dict(body or {})
+
+
+def _admin_products_cache_key(
+    *,
+    page: int,
+    per_page: int,
+    category_id: str | None,
+    subcategory_id: str | None,
+    search: str | None,
+    stock: str | None,
+    kitchen_culture: str | None,
+    sort: str,
+    active_filter: str,
+) -> str:
+    return (
+        f"products:{page}:{per_page}:{category_id}:{subcategory_id}:"
+        f"{search}:{stock}:{kitchen_culture}:{sort}:{active_filter}"
+    )
 
 
 async def _fetch_admin_products_page(
@@ -133,7 +134,9 @@ async def _fetch_admin_products_page(
         params["kitchen_culture"] = kitchen_culture.strip().lower()
 
     where_sql = " AND ".join(where) if where else "1=1"
-    has_filters = bool(search or category_id or subcategory_id or stock or kitchen_culture)
+    has_filters = bool(
+        search or category_id or subcategory_id or stock or kitchen_culture or active_filter != "active"
+    )
 
     if sort == "name_desc":
         order_sql = "p.product_name DESC"
@@ -227,7 +230,7 @@ async def _fetch_admin_products_page(
         total = 500
 
     return {
-        "items": [_admin_product_row_dict(r) for r in rows],
+        "items": [admin_product_row_to_dict(r) for r in rows],
         "total_count": total,
         "total_pages": max(1, (total + per_page - 1) // per_page),
         "current_page": page,
@@ -369,35 +372,21 @@ async def warm_admin_cache(db: AsyncSession) -> None:
         ),
     )
 
-    dash_row = (
-        await db.execute(
-            _text("""
-                SELECT
-                    COUNT(*) FILTER (WHERE is_featured    AND is_active) AS featured,
-                    COUNT(*) FILTER (WHERE is_best_seller AND is_active) AS best_sellers,
-                    COUNT(*) FILTER (WHERE is_new_arrival AND is_active) AS new_arrivals,
-                    COUNT(*) FILTER (WHERE is_hot_offer   AND is_active) AS hot_offers,
-                    COUNT(*) FILTER (WHERE is_exclusive   AND is_active) AS exclusive
-                FROM products
-            """)
-        )
-    ).fetchone()
-    admin_cache_set(
-        "dashboard",
-        {
-            "spotlightCounts": {
-                "featured": dash_row.featured,
-                "bestSellers": dash_row.best_sellers,
-                "newArrivals": dash_row.new_arrivals,
-                "hotOffers": dash_row.hot_offers,
-                "exclusive": dash_row.exclusive,
-            }
-        },
-    )
+    admin_cache_set("dashboard", await _fetch_admin_dashboard(db))
 
-    admin_cache_set("spotlight", await _fetch_admin_spotlight(db))
+    first_products_key = _admin_products_cache_key(
+        page=1,
+        per_page=25,
+        category_id=None,
+        subcategory_id=None,
+        search=None,
+        stock=None,
+        kitchen_culture=None,
+        sort="none",
+        active_filter="active",
+    )
     admin_cache_set(
-        "products:1:25:None:None:None:None:none",
+        first_products_key,
         await _fetch_admin_products_page(
             db,
             page=1,
@@ -406,10 +395,11 @@ async def warm_admin_cache(db: AsyncSession) -> None:
             subcategory_id=None,
             search=None,
             stock=None,
+            kitchen_culture=None,
             sort="none",
+            active_filter="active",
         ),
     )
-
     cat_rows = (await db.execute(_text("""
         SELECT
             c.category_id, c.category_name, c.description, c.slug,
@@ -438,6 +428,8 @@ async def warm_admin_cache(db: AsyncSession) -> None:
             for row in cat_rows
         ],
     )
+
+    admin_cache_set("spotlight", await _fetch_admin_spotlight(db))
 
     banner_rows = await ensure_banner_chains(db)
     admin_cache_set("banners", serialize_banners(banner_rows))
@@ -468,13 +460,13 @@ async def _get_product_or_404(db: AsyncSession, product_id: str) -> Product:
     result = await db.execute(
         select(Product)
         .options(
-            selectinload(Product.images),
-            selectinload(Product.category),
-            selectinload(Product.subcategory),
+            joinedload(Product.images),
+            joinedload(Product.category),
+            joinedload(Product.subcategory),
         )
         .where(Product.product_id == product_id)
     )
-    prod = result.scalar_one_or_none()
+    prod = result.unique().scalar_one_or_none()
     if not prod:
         raise HTTPException(status_code=404, detail="Product not found")
     return prod
@@ -606,10 +598,11 @@ async def admin_categories(user: User = Depends(require_admin), db: AsyncSession
 
 @router.post("/categories")
 async def create_category(
-    body: dict,
+    body: AdminCategoryIn,
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    body = _payload(body)
     cat_id = body.get("category_id") or body.get("ProductCategoryID")
     name = body.get("category_name") or body.get("CategoryName")
     if not cat_id or not name:
@@ -629,10 +622,11 @@ async def create_category(
 @router.put("/categories/{category_id}")
 async def update_category(
     category_id: str,
-    body: dict,
+    body: AdminCategoryIn,
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    body = _payload(body)
     result = await db.execute(select(Category).where(Category.category_id == category_id))
     cat = result.scalar_one_or_none()
     if not cat:
@@ -667,6 +661,11 @@ async def admin_subcategories(
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    cache_key = f"subcategories:{category_id or 'all'}"
+    cached = admin_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     from sqlalchemy import text as _text
     where = "AND s.category_id = :cat_id" if category_id else ""
     result = await db.execute(_text(f"""
@@ -681,7 +680,7 @@ async def admin_subcategories(
                  s.description, s.slug, s.is_active, s.display_order
         ORDER BY s.display_order, s.subcategory_name
     """), {"cat_id": category_id} if category_id else {})
-    return [
+    rows = [
         {
             "subcategory_id": row.subcategory_id,
             "category_id": row.category_id,
@@ -694,14 +693,17 @@ async def admin_subcategories(
         }
         for row in result.fetchall()
     ]
+    admin_cache_set(cache_key, rows)
+    return rows
 
 
 @router.post("/subcategories")
 async def create_subcategory(
-    body: dict,
+    body: AdminSubcategoryIn,
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    body = _payload(body)
     sub_id = body.get("subcategory_id") or body.get("ProductSubCategoryID")
     cat_id = body.get("category_id") or body.get("ProductCategoryID")
     name = body.get("subcategory_name") or body.get("SubCategoryName")
@@ -737,7 +739,17 @@ async def admin_products(
 ):
     response.headers["Cache-Control"] = "no-store"
     sort_key = sort or "none"
-    cache_key = f"products:{page}:{per_page}:{category_id}:{subcategory_id}:{search}:{stock}:{kitchen_culture}:{sort_key}:{active_filter}"
+    cache_key = _admin_products_cache_key(
+        page=page,
+        per_page=per_page,
+        category_id=category_id,
+        subcategory_id=subcategory_id,
+        search=search,
+        stock=stock,
+        kitchen_culture=kitchen_culture,
+        sort=sort_key,
+        active_filter=active_filter,
+    )
     cached = admin_cache_get(cache_key)
     if cached is not None:
         return cached
@@ -766,7 +778,7 @@ async def discounted_products(user: User = Depends(require_admin), db: AsyncSess
 
     result = await db.execute(
         select(Product)
-        .options(selectinload(Product.category))
+        .options(selectinload(Product.category), selectinload(Product.subcategory))
         .where(Product.is_active.is_(True), Product.discount_percent > 0)
         .order_by(Product.discount_percent.desc())
         .limit(500)
@@ -776,6 +788,7 @@ async def discounted_products(user: User = Depends(require_admin), db: AsyncSess
             "productId": p.product_id,
             "productName": p.product_name,
             "categoryName": p.category.category_name if p.category else "",
+            "subCategoryName": p.subcategory.subcategory_name if p.subcategory else "",
             "comparePrice": float(p.compare_price) if p.compare_price else None,
             "sellingPrice": float(p.selling_price),
             "discountPercent": int(p.discount_percent or 0),
@@ -787,7 +800,8 @@ async def discounted_products(user: User = Depends(require_admin), db: AsyncSess
 
 
 @router.post("/products/bulk-discount")
-async def bulk_discount(body: dict, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def bulk_discount(body: AdminBulkDiscountIn, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    body = _payload(body)
     pct = int(body.get("discount_percent", 0))
     if pct < 0 or pct > 100:
         raise HTTPException(status_code=422, detail="Invalid discount")
@@ -812,8 +826,13 @@ async def bulk_discount(body: dict, user: User = Depends(require_admin), db: Asy
 
 
 @router.post("/products/clear-discounts")
-async def clear_discounts(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Product).where(Product.discount_percent > 0))
+async def clear_discounts(body: AdminClearDiscountsIn | None = None, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    body = _payload(body) if body is not None else None
+    ids = (body or {}).get("product_ids") or []
+    q = select(Product).where(Product.discount_percent > 0)
+    if ids:
+        q = q.where(Product.product_id.in_(ids))
+    result = await db.execute(q)
     count = 0
     for p in result.scalars():
         if p.compare_price is not None:
@@ -826,8 +845,14 @@ async def clear_discounts(user: User = Depends(require_admin), db: AsyncSession 
     return {"ok": True, "affected": count}
 
 
+@router.post("/products/bulk-clear-discounts")
+async def bulk_clear_discounts(body: AdminClearDiscountsIn, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    return await clear_discounts(body, user=user, db=db)
+
+
 @router.post("/products/bulk")
-async def bulk_product_action(body: dict, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def bulk_product_action(body: AdminBulkProductActionIn, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    body = _payload(body)
     ids = body.get("product_ids") or []
     action = body.get("action")
     if not ids:
@@ -855,17 +880,25 @@ async def get_admin_product(
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    cache_key = f"product:{product_id}"
+    cached = admin_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     prod = await _get_product_or_404(db, product_id)
     img = primary_image(prod) if prod.images else None
-    return admin_product_to_dict(prod, img)
+    result = admin_product_to_dict(prod, img)
+    admin_cache_set(cache_key, result)
+    return result
 
 
 @router.post("/products")
 async def create_product(
-    body: dict,
+    body: AdminProductIn,
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    body = _payload(body)
     pid = body.get("product_id") or body.get("productId")
     if not pid:
         raise HTTPException(status_code=422, detail="product_id required")
@@ -901,10 +934,11 @@ async def create_product(
 @router.put("/products/{product_id}")
 async def update_product(
     product_id: str,
-    body: dict,
+    body: AdminProductIn,
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    body = _payload(body)
     result = await db.execute(select(Product).where(Product.product_id == product_id))
     prod = result.scalar_one_or_none()
     if not prod:
@@ -984,10 +1018,11 @@ async def list_product_images(
 @router.post("/products/{product_id}/images")
 async def add_product_image_url(
     product_id: str,
-    body: dict,
+    body: AdminProductImageIn,
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    body = _payload(body)
     await _get_product_or_404(db, product_id)
     image_url = (body.get("image_url") or body.get("imageUrl") or "").strip()
     if not image_url:
@@ -1057,10 +1092,11 @@ async def upload_product_images(
 async def update_product_image(
     product_id: str,
     image_id: int,
-    body: dict,
+    body: AdminProductImageIn,
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    body = _payload(body)
     await _get_product_or_404(db, product_id)
     result = await db.execute(
         select(ProductImage).where(
@@ -1437,13 +1473,9 @@ async def admin_spotlight(user: User = Depends(require_admin), db: AsyncSession 
     return result
 
 
-@router.get("/dashboard")
-async def admin_dashboard(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    cached = admin_cache_get("dashboard")
-    if cached is not None:
-        return cached
-
+async def _fetch_admin_dashboard(db: AsyncSession) -> dict:
     from sqlalchemy import text as _text
+
     row = (await db.execute(_text("""
         SELECT
             COUNT(*) FILTER (WHERE is_featured    AND is_active) AS featured,
@@ -1462,7 +1494,7 @@ async def admin_dashboard(user: User = Depends(require_admin), db: AsyncSession 
             (SELECT COUNT(*) FROM products WHERE is_active AND discount_percent > 0) AS on_sale,
             (SELECT AVG(selling_price) FROM products WHERE is_active)  AS avg_price
     """))).fetchone()
-    result = {
+    return {
         "spotlightCounts": {
             "featured": row.featured,
             "bestSellers": row.best_sellers,
@@ -1479,12 +1511,25 @@ async def admin_dashboard(user: User = Depends(require_admin), db: AsyncSession 
             "avgPrice": round(float(stats_row.avg_price or 0), 2),
         },
     }
+
+
+@router.get("/dashboard")
+async def admin_dashboard(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    cached = admin_cache_get("dashboard")
+    if cached is not None:
+        return cached
+
+    result = await _fetch_admin_dashboard(db)
     admin_cache_set("dashboard", result)
     return result
 
 
 @router.get("/brands")
 async def admin_brands(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    cached = admin_cache_get("brands")
+    if cached is not None:
+        return cached
+
     from sqlalchemy import text as _text
     result = await db.execute(
         _text("""
@@ -1493,7 +1538,9 @@ async def admin_brands(user: User = Depends(require_admin), db: AsyncSession = D
             ORDER BY brand
         """)
     )
-    return [row.brand for row in result.fetchall()]
+    rows = [row.brand for row in result.fetchall()]
+    admin_cache_set("brands", rows)
+    return rows
 
 
 @router.get("/testimonials")
@@ -1576,138 +1623,6 @@ async def delete_testimonial(
         raise HTTPException(status_code=404, detail="Testimonial not found")
     await db.delete(t)
     invalidate_admin_site_cache("testimonials", "spotlight")
-    return {"ok": True}
-
-
-@router.get("/newsletter")
-async def admin_newsletter(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    cached = admin_cache_get("newsletter")
-    if cached is not None:
-        return cached
-
-    result = await db.execute(select(NewsletterSubscriber).order_by(NewsletterSubscriber.subscribed_at.desc()))
-    subs = list(result.scalars())
-    week_ago = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
-    new_week = sum(1 for s in subs if s.subscribed_at and s.subscribed_at >= week_ago)
-    active = sum(1 for s in subs if s.is_active)
-    payload = {
-        "stats": {
-            "total": len(subs),
-            "active": active,
-            "unsubscribed": len(subs) - active,
-            "newThisWeek": new_week,
-        },
-        "items": [
-            {
-                "id": s.id,
-                "email": s.email,
-                "isActive": s.is_active,
-                "subscribedAt": s.subscribed_at.isoformat() if s.subscribed_at else None,
-            }
-            for s in subs
-        ],
-    }
-    admin_cache_set("newsletter", payload)
-    return payload
-
-
-@router.post("/newsletter")
-async def create_newsletter_subscriber(
-    body: AdminNewsletterCreateIn,
-    user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    email = body.email.strip().lower()
-    existing = await db.execute(select(NewsletterSubscriber).where(NewsletterSubscriber.email == email))
-    sub = existing.scalar_one_or_none()
-    if sub:
-        if sub.email == email and body.is_active and sub.is_active:
-            raise HTTPException(status_code=409, detail="This email is already subscribed")
-        sub.email = email
-        sub.is_active = body.is_active
-        await db.flush()
-        invalidate_admin_site_cache("newsletter")
-        return {
-            "id": sub.id,
-            "email": sub.email,
-            "isActive": sub.is_active,
-            "subscribedAt": sub.subscribed_at.isoformat() if sub.subscribed_at else None,
-        }
-    sub = NewsletterSubscriber(email=email, is_active=body.is_active)
-    db.add(sub)
-    await db.flush()
-    await db.refresh(sub)
-    invalidate_admin_site_cache("newsletter")
-    return {
-        "id": sub.id,
-        "email": sub.email,
-        "isActive": sub.is_active,
-        "subscribedAt": sub.subscribed_at.isoformat() if sub.subscribed_at else None,
-    }
-
-
-@router.put("/newsletter/{subscriber_id}")
-async def update_newsletter_subscriber(
-    subscriber_id: int,
-    body: AdminNewsletterUpdateIn,
-    user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(NewsletterSubscriber).where(NewsletterSubscriber.id == subscriber_id))
-    sub = result.scalar_one_or_none()
-    if not sub:
-        raise HTTPException(status_code=404, detail="Subscriber not found")
-    if body.email is not None:
-        email = body.email.strip().lower()
-        if email != sub.email:
-            clash = await db.execute(
-                select(NewsletterSubscriber).where(
-                    NewsletterSubscriber.email == email,
-                    NewsletterSubscriber.id != subscriber_id,
-                )
-            )
-            if clash.scalar_one_or_none():
-                raise HTTPException(status_code=409, detail="Another subscriber already uses this email")
-            sub.email = email
-    if body.is_active is not None:
-        sub.is_active = body.is_active
-    await db.flush()
-    invalidate_admin_site_cache("newsletter")
-    return {
-        "id": sub.id,
-        "email": sub.email,
-        "isActive": sub.is_active,
-        "subscribedAt": sub.subscribed_at.isoformat() if sub.subscribed_at else None,
-    }
-
-
-@router.delete("/newsletter/{subscriber_id}")
-async def delete_newsletter_subscriber(
-    subscriber_id: int,
-    user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(NewsletterSubscriber).where(NewsletterSubscriber.id == subscriber_id))
-    sub = result.scalar_one_or_none()
-    if not sub:
-        raise HTTPException(status_code=404, detail="Subscriber not found")
-    await db.delete(sub)
-    invalidate_admin_site_cache("newsletter")
-    return {"ok": True}
-
-
-@router.patch("/newsletter/{subscriber_id}")
-async def unsubscribe_newsletter(
-    subscriber_id: int,
-    user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(NewsletterSubscriber).where(NewsletterSubscriber.id == subscriber_id))
-    sub = result.scalar_one_or_none()
-    if not sub:
-        raise HTTPException(status_code=404, detail="Subscriber not found")
-    sub.is_active = False
-    invalidate_admin_site_cache("newsletter")
     return {"ok": True}
 
 

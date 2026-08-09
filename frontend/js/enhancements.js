@@ -188,84 +188,185 @@ let mobileFilterBound = false;
 
 function initMobileFilterDrawer() {
     if (mobileFilterBound) return;
-    mobileFilterBound = true;
 
     const triggerBtn = document.getElementById('mobile-filter-btn');
     const sheet      = document.getElementById('mobile-filter-sheet');
+    const sheetBody  = document.getElementById('mobile-filter-body');
     const overlay    = document.getElementById('mobile-filter-overlay');
     const closeBtn   = document.getElementById('mobile-filter-close');
+    const sidebar    = document.querySelector('nav.catalog-sidebar')
+        || document.querySelector('.catalog-sidebar.filter-panel')
+        || document.querySelector('.catalog-sidebar');
+    const catalogLayout = document.querySelector('.catalog-layout');
 
-    if (!triggerBtn || !sheet) return;
+    if (!triggerBtn || !sidebar || !overlay) return;
+    mobileFilterBound = true;
 
-    triggerBtn.addEventListener('click', () => {
-        sheet.classList.add('open');
-        overlay && overlay.classList.add('open');
-        document.body.classList.add('drawer-open');
-        const sidebarContent = document.querySelector('.catalog-sidebar');
-        const sheetBody = document.getElementById('mobile-filter-body');
-        if (sidebarContent && sheetBody) {
-            sheetBody.className = 'mobile-filter-body filter-panel';
-            sheetBody.innerHTML = sidebarContent.innerHTML;
-            bindClonedFilterEvents(sheetBody);
-            updateFilterSidebarMeta();
+    const open = (e) => {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
         }
-    });
 
-    const close = () => {
-        sheet.classList.remove('open');
-        overlay && overlay.classList.remove('open');
-        document.body.classList.remove('drawer-open');
+        /* Prefer dedicated left sheet host so the panel is always visible */
+        if (sheet && sheetBody) {
+            if (sidebar.parentElement !== sheetBody) {
+                sheetBody.appendChild(sidebar);
+            }
+            sidebar.classList.add('mobile-filter-open');
+            sidebar.style.cssText = [
+                'display:flex',
+                'flex-direction:column',
+                'position:relative',
+                'transform:none',
+                'width:100%',
+                'max-width:100%',
+                'height:100%',
+                'max-height:none',
+                'visibility:visible',
+                'opacity:1',
+                'inset:auto',
+                'z-index:1',
+                'border:none',
+                'border-radius:0',
+                'box-shadow:none',
+            ].join(';');
+            sheet.classList.add('open');
+            sheet.setAttribute('aria-hidden', 'false');
+        } else {
+            sidebar.classList.add('mobile-filter-open');
+        }
+
+        overlay.classList.add('open');
+        document.body.classList.add('drawer-open');
+        triggerBtn.setAttribute('aria-expanded', 'true');
+        if (typeof updateFilterSidebarMeta === 'function') updateFilterSidebarMeta();
     };
 
-    closeBtn && closeBtn.addEventListener('click', close);
-    overlay  && overlay.addEventListener('click', close);
-}
+    const close = () => {
+        overlay.classList.remove('open');
+        document.body.classList.remove('drawer-open');
+        triggerBtn.setAttribute('aria-expanded', 'false');
 
-function bindClonedFilterEvents(container) {
-    bindCultureFilterEvents(container);
-    bindCategoryFilterEvents(container);
-    bindSpotlightFilterEvents(container);
-    initFilterAccordions(container);
-    initClearAllButton(container);
+        if (sheet) {
+            sheet.classList.remove('open');
+            sheet.setAttribute('aria-hidden', 'true');
+        }
+
+        sidebar.classList.remove('mobile-filter-open');
+        sidebar.style.cssText = '';
+
+        /* Put sidebar back into catalog layout for desktop resize */
+        if (catalogLayout && sidebar.parentElement !== catalogLayout) {
+            const main = catalogLayout.querySelector('.catalog-main');
+            if (main) catalogLayout.insertBefore(sidebar, main);
+            else catalogLayout.prepend(sidebar);
+        }
+    };
+
+    triggerBtn.setAttribute('aria-expanded', 'false');
+    triggerBtn.setAttribute('aria-controls', 'mobile-filter-sheet');
+    if (sheet) sheet.setAttribute('aria-hidden', 'true');
+
+    triggerBtn.addEventListener('click', open);
+    closeBtn && closeBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        close();
+    });
+    overlay.addEventListener('click', close);
+
+    /* Close affordance inside the filter ticket header */
+    if (!sidebar.querySelector('.mobile-filter-panel-close')) {
+        const head = sidebar.querySelector('.filter-panel-ticket');
+        if (head) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'mobile-filter-panel-close drawer-close';
+            btn.setAttribute('aria-label', 'Close filters');
+            btn.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                close();
+            });
+            head.appendChild(btn);
+        }
+    }
 }
 
 function initStickyToolbar() {
     const toolbar = document.querySelector('.catalog-toolbar');
     if (!toolbar) return;
 
+    if (window.matchMedia('(max-width: 767px)').matches) {
+        toolbar.classList.remove('toolbar-sticky');
+        return;
+    }
+
     const sentinel = document.createElement('div');
     sentinel.style.height = '1px';
     toolbar.parentNode.insertBefore(sentinel, toolbar);
+
+    const headerH = getComputedStyle(document.documentElement)
+        .getPropertyValue('--header-h').trim() || '68px';
 
     const obs = new IntersectionObserver(entries => {
         entries.forEach(e => {
             toolbar.classList.toggle('toolbar-sticky', !e.isIntersecting);
         });
-    }, { rootMargin: `-${getComputedStyle(document.documentElement).getPropertyValue('--header-h').trim()} 0px 0px 0px` });
+    }, { rootMargin: `-${headerH} 0px 0px 0px` });
 
     obs.observe(sentinel);
 }
 
 function pushFilterState() {
-    const params = new URLSearchParams();
-    if (filterState.selectedCategories.length === 1)
+    if (typeof history === 'undefined' || !history.replaceState) return;
+    const params = new URLSearchParams(window.location.search);
+
+    if (filterState.selectedCategories.length === 1) {
         params.set('category', filterState.selectedCategories[0]);
-    if (filterState.selectedSubCategories.length === 1)
+    } else {
+        params.delete('category');
+    }
+
+    if (filterState.selectedSubCategories.length === 1) {
         params.set('subcategory', filterState.selectedSubCategories[0]);
-    if (filterState.searchQuery.trim())
-        params.set('search', filterState.searchQuery.trim());
-    if (filterState.sortBy !== 'none')
-        params.set('sort', filterState.sortBy);
-    if (filterState.spotlightSection)
-        params.set('section', filterState.spotlightSection);
-    if (filterState.selectedCultures.length)
+    } else {
+        params.delete('subcategory');
+    }
+
+    if (filterState.selectedCultures.length) {
         params.set('culture', filterState.selectedCultures.join(','));
+    } else {
+        params.delete('culture');
+    }
 
-    const newUrl = params.toString()
-        ? `${location.pathname}?${params.toString()}`
-        : location.pathname;
+    if (filterState.searchQuery.trim()) {
+        params.set('search', filterState.searchQuery.trim());
+    } else {
+        params.delete('search');
+    }
 
-    history.replaceState(null, '', newUrl);
+    if (filterState.spotlightSection) {
+        params.set('section', filterState.spotlightSection);
+    } else {
+        params.delete('section');
+    }
+
+    if (filterState.sortBy && filterState.sortBy !== 'none') {
+        params.set('sort', filterState.sortBy);
+    } else {
+        params.delete('sort');
+    }
+
+    if (filterState.perPage && filterState.perPage !== 96) {
+        params.set('perPage', String(filterState.perPage));
+    } else {
+        params.delete('perPage');
+    }
+
+    const qs = params.toString();
+    history.replaceState(null, '', qs ? `${location.pathname}?${qs}` : location.pathname);
 }
 
 function updatePageMeta() {

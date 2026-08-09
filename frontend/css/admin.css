@@ -561,6 +561,8 @@ ul { list-style: none; }
     min-height: 80px;
 }
 .adm-table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+#discounted-table { table-layout: fixed; }
+#discounted-table-wrap.adm-table-wrap { overflow-x: hidden; }
 .adm-table thead { position: sticky; top: 0; z-index: 2; }
 .adm-table th {
     background: var(--adm-green);
@@ -579,6 +581,7 @@ ul { list-style: none; }
     box-shadow: inset 0 -2px 0 rgba(255,255,255,.3), 0 2px 4px rgba(0,0,0,.08);
 }
 .adm-table th.no-sort { cursor: default; }
+.adm-table th:last-child { text-align: right; width: 72px; }
 .adm-table td { padding: 10px 12px; border-bottom: 1px solid var(--adm-border); vertical-align: middle; }
 .adm-table td:last-child { text-align: right; white-space: nowrap; }
 .adm-table td .adm-table-actions { justify-content: flex-end; }
@@ -1462,3 +1465,36 @@ ul { list-style: none; }
     .adm-page-actions { width: 100%; }
     .adm-page-actions .adm-btn { flex: 1; justify-content: center; }
 }
+
+/* Exit / logout loading (mirrors storefront auth overlay) */
+.login-loading-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(13, 27, 42, 0.72);
+    backdrop-filter: blur(4px);
+}
+.login-loading-overlay[hidden] { display: none !important; }
+.login-loading-card {
+    background: #fff;
+    border-radius: 14px;
+    padding: 28px 36px;
+    text-align: center;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+    min-width: 220px;
+}
+.login-loading-card i {
+    font-size: 1.75rem;
+    color: var(--adm-green, #1b5e3a);
+    margin-bottom: 12px;
+}
+.login-loading-card p {
+    margin: 0;
+    font-weight: 600;
+    color: #0d1b2a;
+}
+body.login-loading-active { overflow: hidden; }
+

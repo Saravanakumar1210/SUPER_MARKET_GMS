@@ -15,8 +15,6 @@ KITCHEN_CULTURES: list[dict[str, str]] = [
 
 VALID_KITCHEN_CULTURES = {c["key"] for c in KITCHEN_CULTURES}
 
-KITCHEN_CULTURE_LABELS = {c["key"]: c["label"] for c in KITCHEN_CULTURES}
-
 # Product name queries used once to seed products.kitchen_culture
 KITCHEN_CULTURE_SEED_QUERIES: dict[str, list[str]] = {
     "asian": [

@@ -75,7 +75,11 @@ CREATE INDEX IF NOT EXISTS idx_product_images_product ON product_images(product_
 CREATE TABLE IF NOT EXISTS users (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name            VARCHAR(100),
+    username        VARCHAR(50) UNIQUE,
     email           VARCHAR(255) UNIQUE NOT NULL,
+    phone           VARCHAR(30) UNIQUE,
+    phone_country   VARCHAR(5) DEFAULT 'GB',
+    address         TEXT,
     email_verified  TIMESTAMPTZ,
     role            VARCHAR(20) DEFAULT 'customer',
     created_at      TIMESTAMPTZ DEFAULT NOW(),
@@ -152,3 +156,33 @@ CREATE TABLE IF NOT EXISTS site_settings (
     setting_type    VARCHAR(20),
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- ── Contact form ─────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS contact_submissions (
+    id           SERIAL PRIMARY KEY,
+    name         VARCHAR(150) NOT NULL,
+    email        VARCHAR(255) NOT NULL,
+    phone        VARCHAR(30),
+    enquiry_type VARCHAR(100),
+    message      TEXT NOT NULL,
+    is_read      BOOLEAN DEFAULT FALSE,
+    submitted_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_contact_submissions_submitted_at
+    ON contact_submissions (submitted_at DESC);
+
+-- ── Per-user shopping basket ─────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS user_cart_items (
+    id            SERIAL PRIMARY KEY,
+    user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    product_name  VARCHAR(255) NOT NULL,
+    quantity      INTEGER NOT NULL CHECK (quantity > 0),
+    updated_at    TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (user_id, product_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_cart_user
+    ON user_cart_items (user_id);

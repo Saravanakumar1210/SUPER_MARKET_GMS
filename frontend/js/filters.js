@@ -5,7 +5,7 @@ const filterState = {
     searchQuery: '',
     sortBy: 'none',
     currentPage: 1,
-    perPage: 24,
+    perPage: 96,
     spotlightSection: null
 };
 
@@ -603,6 +603,7 @@ function initSortControl() {
     sortSelect.addEventListener('change', () => {
         filterState.sortBy = sortSelect.value;
         cachedFilterHash = '';
+        pushFilterState();
         applyFilters(true);
     });
 }
@@ -615,6 +616,7 @@ function initPerPageControl() {
         filterState.perPage = parseInt(perPageSelect.value, 10);
         filterState.currentPage = 1;
         cachedFilterHash = '';
+        pushFilterState();
         applyFilters();
     });
 }
@@ -644,6 +646,7 @@ function applyUrlParams() {
     const subcategory = params.get('subcategory');
     const search = params.get('search');
     const sort = params.get('sort');
+    const perPage = params.get('perPage');
 
     if (category) {
         const match = findCategoryByParam(category);
@@ -677,6 +680,14 @@ function applyUrlParams() {
             if (sortSelect) sortSelect.value = sortMap[sort];
         }
     }
+    if (perPage) {
+        const parsed = parseInt(perPage, 10);
+        if ([24, 48, 96, 192].includes(parsed)) {
+            filterState.perPage = parsed;
+            const perPageSelect = document.getElementById('per-page-select');
+            if (perPageSelect) perPageSelect.value = parsed;
+        }
+    }
     const section = params.get('section');
     if (section && SPOTLIGHT_FILTERS.some(s => s.key === section)) {
         filterState.spotlightSection = section;
@@ -687,4 +698,58 @@ function applyUrlParams() {
         const valid = keys.filter(k => KITCHEN_CULTURE_DEFS.some(c => c.key === k));
         if (valid.length) filterState.selectedCultures = valid;
     }
+}
+
+/**
+ * Push current filter preferences into the URL so refresh/share keeps state.
+ */
+function pushFilterState() {
+    if (typeof history === 'undefined' || !history.replaceState) return;
+    const params = new URLSearchParams(window.location.search);
+
+    if (filterState.selectedCategories.length === 1) {
+        params.set('category', filterState.selectedCategories[0]);
+    } else {
+        params.delete('category');
+    }
+
+    if (filterState.selectedSubCategories.length === 1) {
+        params.set('subcategory', filterState.selectedSubCategories[0]);
+    } else {
+        params.delete('subcategory');
+    }
+
+    if (filterState.selectedCultures.length) {
+        params.set('culture', filterState.selectedCultures.join(','));
+    } else {
+        params.delete('culture');
+    }
+
+    if (filterState.searchQuery.trim()) {
+        params.set('search', filterState.searchQuery.trim());
+    } else {
+        params.delete('search');
+    }
+
+    if (filterState.spotlightSection) {
+        params.set('section', filterState.spotlightSection);
+    } else {
+        params.delete('section');
+    }
+
+    if (filterState.sortBy && filterState.sortBy !== 'none') {
+        params.set('sort', filterState.sortBy);
+    } else {
+        params.delete('sort');
+    }
+
+    if (filterState.perPage && filterState.perPage !== 96) {
+        params.set('perPage', String(filterState.perPage));
+    } else {
+        params.delete('perPage');
+    }
+
+    const qs = params.toString();
+    const newUrl = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+    history.replaceState(null, '', newUrl);
 }

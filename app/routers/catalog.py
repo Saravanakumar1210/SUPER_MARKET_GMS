@@ -6,16 +6,14 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.config import get_settings
 from app.core.banner_order import ordered_active_banners
-from app.core.kitchen_cultures import KITCHEN_CULTURES, normalize_kitchen_culture
+from app.core.kitchen_cultures import KITCHEN_CULTURES
 from app.core.culture_order import ordered_active_cultures
 from app.core.site_settings import load_public_site_settings
 from app.core.catalog import (
     HIDDEN_CATEGORIES,
     _cache_get,
     _cache_set,
-    invalidate_catalog_cache,
 )
 from app.core.helpers import (
     build_products_query,
@@ -26,7 +24,7 @@ from app.core.helpers import (
     product_to_dict,
 )
 from app.database import get_db
-from app.models import Category, Product, ProductImage, SiteBanner, SiteSetting, Subcategory, Testimonial
+from app.models import Category, Product, ProductImage, SiteSetting, Subcategory, Testimonial
 from app.schemas import (
     BannerOut,
     BootstrapOut,
@@ -70,13 +68,40 @@ def _build_promotion_banners(banner_rows, category_stats: list[dict]) -> list[di
     return banners
 
 
-async def _load_active_products(db: AsyncSession) -> list[dict]:
-    cached = _cache_get("active_products")
+async def _load_active_products(db: AsyncSession, *, home_only: bool = False) -> list[dict]:
+    cache_key = "home_products" if home_only else "active_products"
+    cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
+    if home_only:
+        all_cached = _cache_get("active_products")
+        if all_cached is not None:
+            home_products = [
+                product for product in all_cached
+                if any(product.get(flag) for flag in (
+                    "isFeatured",
+                    "isBestSeller",
+                    "isNewArrival",
+                    "isHotOffer",
+                    "isExclusive",
+                ))
+            ]
+            _cache_set(cache_key, home_products)
+            return home_products
+
+    home_filter = """
+          AND (
+              p.is_featured = true
+              OR p.is_best_seller = true
+              OR p.is_new_arrival = true
+              OR p.is_hot_offer = true
+              OR p.is_exclusive = true
+          )
+    """ if home_only else ""
+
     # Single JOIN query — replaces 4 separate ORM round-trips
-    result = await db.execute(text("""
+    result = await db.execute(text(f"""
         SELECT
             p.product_id,
             p.product_name,
@@ -89,6 +114,7 @@ async def _load_active_products(db: AsyncSession) -> list[dict]:
             p.is_hot_offer,
             p.is_exclusive,
             p.discount_percent,
+            p.selling_price,
             p.kitchen_culture,
             p.category_id,
             c.category_name,
@@ -106,6 +132,7 @@ async def _load_active_products(db: AsyncSession) -> list[dict]:
             LIMIT 1
         ) pi ON true
         WHERE p.is_active = true
+        {home_filter}
         ORDER BY p.product_name
     """))
 
@@ -131,10 +158,11 @@ async def _load_active_products(db: AsyncSession) -> list[dict]:
             "isHotOffer": bool(row.is_hot_offer),
             "isExclusive": bool(row.is_exclusive),
             "discountPercent": int(row.discount_percent or 0),
+            "sellingPrice": float(row.selling_price) if row.selling_price is not None else 0.0,
             "kitchenCulture": row.kitchen_culture,
         })
 
-    _cache_set("active_products", products)
+    _cache_set(cache_key, products)
     return products
 
 
@@ -188,6 +216,30 @@ async def catalog_metadata(db: AsyncSession = Depends(get_db)):
 async def catalog_products_bulk(db: AsyncSession = Depends(get_db)):
     """All active products for client-side filtering (no pagination count)."""
     return CatalogProductsBulkOut(products=await _load_active_products(db))
+
+
+@router.get("/catalog/home-products", response_model=CatalogProductsBulkOut)
+async def catalog_home_products(db: AsyncSession = Depends(get_db)):
+    """Only products used by homepage strips, avoiding the full catalog payload."""
+    return CatalogProductsBulkOut(products=await _load_active_products(db, home_only=True))
+
+
+@router.get("/catalog/cart-products", response_model=CatalogProductsBulkOut)
+async def catalog_cart_products(
+    names: str = Query(..., description="Comma-separated product names in the basket"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lightweight product payload for basket page — only items currently in the cart."""
+    name_list = [n.strip() for n in names.split(",") if n.strip()]
+    if not name_list:
+        return CatalogProductsBulkOut(products=[])
+    if len(name_list) > 100:
+        raise HTTPException(status_code=400, detail="Too many product names requested")
+
+    all_products = await _load_active_products(db)
+    wanted = set(name_list)
+    matched = [p for p in all_products if p.get("productName") in wanted]
+    return CatalogProductsBulkOut(products=matched)
 
 
 @router.get("/catalog/bootstrap", response_model=BootstrapOut)
@@ -364,10 +416,13 @@ async def list_kitchen_cultures():
     return [KitchenCultureOut(**c) for c in KITCHEN_CULTURES]
 
 
-@router.get("/cultures", response_model=list[CultureOut])
-async def list_cultures(db: AsyncSession = Depends(get_db)):
+async def _load_active_cultures(db: AsyncSession) -> list[CultureOut]:
+    cached = _cache_get("public_cultures")
+    if cached is not None:
+        return cached
+
     rows = await ordered_active_cultures(db)
-    return [
+    cultures = [
         CultureOut(
             id=b.id,
             title=b.title,
@@ -377,6 +432,13 @@ async def list_cultures(db: AsyncSession = Depends(get_db)):
         )
         for b in rows
     ]
+    _cache_set("public_cultures", cultures)
+    return cultures
+
+
+@router.get("/cultures", response_model=list[CultureOut])
+async def list_cultures(db: AsyncSession = Depends(get_db)):
+    return await _load_active_cultures(db)
 
 
 @router.get("/banners", response_model=list[BannerOut])
@@ -397,12 +459,20 @@ async def list_banners(db: AsyncSession = Depends(get_db)):
 
 @router.get("/testimonials", response_model=list[TestimonialOut])
 async def list_testimonials(db: AsyncSession = Depends(get_db)):
+    return await _load_featured_testimonials(db)
+
+
+async def _load_featured_testimonials(db: AsyncSession) -> list[TestimonialOut]:
+    cached = _cache_get("public_testimonials")
+    if cached is not None:
+        return cached
+
     result = await db.execute(
         select(Testimonial)
         .where(Testimonial.is_featured.is_(True))
         .order_by(Testimonial.display_order)
     )
-    return [
+    testimonials = [
         TestimonialOut(
             initials=t.customer_initial or (t.customer_name[:2] if t.customer_name else "??"),
             name=t.customer_name,
@@ -411,6 +481,8 @@ async def list_testimonials(db: AsyncSession = Depends(get_db)):
         )
         for t in result.scalars()
     ]
+    _cache_set("public_testimonials", testimonials)
+    return testimonials
 
 
 @router.get("/coupons/active")

@@ -3,7 +3,7 @@
 const AdminAPI = {
     TOKEN_KEY: 'gms_admin_token_v2',
     USER_KEY: 'gms_admin_user_v2',
-    _productsAbort: null,
+    _productsAborts: new Map(),
 
     /** API base — same origin when served via http(s); required for fetch() to work. */
     get baseUrl() {
@@ -17,15 +17,15 @@ const AdminAPI = {
 
     getToken() {
         try {
-            let token = sessionStorage.getItem(this.TOKEN_KEY);
+            let token = localStorage.getItem(this.TOKEN_KEY);
             if (!token) {
-                token = localStorage.getItem(this.TOKEN_KEY);
+                token = sessionStorage.getItem(this.TOKEN_KEY);
                 if (token) {
-                    sessionStorage.setItem(this.TOKEN_KEY, token);
-                    const user = localStorage.getItem(this.USER_KEY);
-                    if (user) sessionStorage.setItem(this.USER_KEY, user);
-                    localStorage.removeItem(this.TOKEN_KEY);
-                    localStorage.removeItem(this.USER_KEY);
+                    localStorage.setItem(this.TOKEN_KEY, token);
+                    const user = sessionStorage.getItem(this.USER_KEY);
+                    if (user) localStorage.setItem(this.USER_KEY, user);
+                    sessionStorage.removeItem(this.TOKEN_KEY);
+                    sessionStorage.removeItem(this.USER_KEY);
                 }
             }
             return token;
@@ -34,8 +34,10 @@ const AdminAPI = {
 
     setSession(token, user) {
         try {
-            sessionStorage.setItem(this.TOKEN_KEY, token);
-            sessionStorage.setItem(this.USER_KEY, JSON.stringify(user));
+            localStorage.setItem(this.TOKEN_KEY, token);
+            localStorage.setItem(this.USER_KEY, JSON.stringify(user));
+            sessionStorage.removeItem(this.TOKEN_KEY);
+            sessionStorage.removeItem(this.USER_KEY);
         } catch (_) {}
     },
 
@@ -50,7 +52,14 @@ const AdminAPI = {
 
     getUser() {
         try {
-            const raw = sessionStorage.getItem(this.USER_KEY);
+            let raw = localStorage.getItem(this.USER_KEY);
+            if (!raw) {
+                raw = sessionStorage.getItem(this.USER_KEY);
+                if (raw) {
+                    localStorage.setItem(this.USER_KEY, raw);
+                    sessionStorage.removeItem(this.USER_KEY);
+                }
+            }
             return raw ? JSON.parse(raw) : null;
         } catch (_) { return null; }
     },
@@ -76,13 +85,6 @@ const AdminAPI = {
             throw err;
         }
         return data;
-    },
-
-    login(email, password) {
-        return this.request('/api/v1/auth/login', {
-            method: 'POST',
-            body: JSON.stringify({ email, password }),
-        });
     },
 
     logout() {
@@ -112,12 +114,12 @@ const AdminAPI = {
     updateSubcategory(id, body) { return this.request(`/api/v1/admin/subcategories/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) }); },
     deleteSubcategory(id) { return this.request(`/api/v1/admin/subcategories/${encodeURIComponent(id)}`, { method: 'DELETE' }); },
 
-    products(params = {}, { cancelPrevious = true } = {}) {
-        if (cancelPrevious && this._productsAbort) {
-            this._productsAbort.abort();
+    products(params = {}, { cancelPrevious = true, scope = 'products-list' } = {}) {
+        if (cancelPrevious) {
+            this._productsAborts.get(scope)?.abort();
         }
         const controller = new AbortController();
-        if (cancelPrevious) this._productsAbort = controller;
+        if (cancelPrevious) this._productsAborts.set(scope, controller);
 
         const qs = new URLSearchParams();
         Object.entries(params).forEach(([k, v]) => { if (v !== '' && v != null) qs.set(k, v); });
@@ -132,11 +134,14 @@ const AdminAPI = {
     bulkProducts(body) { return this.request('/api/v1/admin/products/bulk', { method: 'POST', body: JSON.stringify(body) }); },
     discountedProducts() { return this.request('/api/v1/admin/products/discounted'); },
     bulkDiscount(body) { return this.request('/api/v1/admin/products/bulk-discount', { method: 'POST', body: JSON.stringify(body) }); },
-    clearDiscounts() { return this.request('/api/v1/admin/products/clear-discounts', { method: 'POST' }); },
-
-    productImages(productId) {
-        return this.request(`/api/v1/admin/products/${encodeURIComponent(productId)}/images`);
+    clearDiscounts(body) {
+        return this.request('/api/v1/admin/products/clear-discounts', {
+            method: 'POST',
+            body: body ? JSON.stringify(body) : undefined,
+        });
     },
+    bulkClearDiscounts(body) { return this.clearDiscounts(body); },
+
     addProductImageUrl(productId, body) {
         return this.request(`/api/v1/admin/products/${encodeURIComponent(productId)}/images`, {
             method: 'POST',
@@ -201,18 +206,6 @@ const AdminAPI = {
     createTestimonial(body) { return this.request('/api/v1/admin/testimonials', { method: 'POST', body: JSON.stringify(body) }); },
     updateTestimonial(id, body) { return this.request(`/api/v1/admin/testimonials/${id}`, { method: 'PUT', body: JSON.stringify(body) }); },
     deleteTestimonial(id) { return this.request(`/api/v1/admin/testimonials/${id}`, { method: 'DELETE' }); },
-
-    newsletter() { return this.request('/api/v1/admin/newsletter'); },
-    createNewsletterSubscriber(body) {
-        return this.request('/api/v1/admin/newsletter', { method: 'POST', body: JSON.stringify(body) });
-    },
-    updateNewsletterSubscriber(id, body) {
-        return this.request(`/api/v1/admin/newsletter/${id}`, { method: 'PUT', body: JSON.stringify(body) });
-    },
-    deleteNewsletterSubscriber(id) {
-        return this.request(`/api/v1/admin/newsletter/${id}`, { method: 'DELETE' });
-    },
-    unsubscribe(id) { return this.request(`/api/v1/admin/newsletter/${id}`, { method: 'PATCH' }); },
 
     settings() { return this.request('/api/v1/admin/settings'); },
     saveSettings(body) { return this.request('/api/v1/admin/settings', { method: 'PUT', body: JSON.stringify(body) }); },

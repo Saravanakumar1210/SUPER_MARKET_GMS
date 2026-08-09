@@ -21,18 +21,24 @@ const UI = {
             document.getElementById('confirm-message').textContent = message;
             const ok = document.getElementById('confirm-ok');
             const cancel = document.getElementById('confirm-cancel');
+            const closeBtn = modal.querySelector('.confirm-close');
             ok.textContent = okLabel;
             ok.className = `adm-btn ${okClass}`;
             cancel.textContent = cancelLabel;
             modal.classList.remove('hidden');
-            const close = () => {
+            let settled = false;
+            const finish = (value) => {
+                if (settled) return;
+                settled = true;
                 modal.classList.add('hidden');
                 ok.onclick = null;
                 cancel.onclick = null;
+                if (closeBtn) closeBtn.onclick = null;
+                resolve(value);
             };
-            ok.onclick = () => { close(); resolve(true); };
-            cancel.onclick = () => { close(); resolve(false); };
-            modal.querySelector('.confirm-close').onclick = () => { close(); resolve(false); };
+            ok.onclick = () => finish(true);
+            cancel.onclick = () => finish(false);
+            if (closeBtn) closeBtn.onclick = () => finish(false);
         });
     },
 
@@ -77,11 +83,13 @@ const UI = {
 /* ── Client-side TTL cache (avoids re-fetching on every nav click) ── */
 const _ac = {};
 const _acGen = {};
+const _acPending = {};
 const _AC_TTL = 600000; // 10 minutes — survives reloads within an admin session
 const _AC_STORE_KEY = 'gms_admin_cache_v1';
 const _AC_PERSIST_KEYS = new Set([
-    'banners', 'cultures', 'testimonials', 'newsletter', 'spotlight',
+    'banners', 'cultures', 'testimonials', 'spotlight',
     'dashboard', 'categories', 'stats', 'settings', 'discountedProducts',
+    'brands', 'kitchenCultures',
 ]);
 
 function acHydrate() {
@@ -101,8 +109,23 @@ function acHydrate() {
 function acPersist() {
     try {
         const subset = {};
+        const recentProductKeys = Object.keys(_ac)
+            .filter(key => key.startsWith('products:'))
+            .sort((a, b) => _ac[b].t - _ac[a].t)
+            .slice(0, 8);
+        const recentProductDetails = Object.keys(_ac)
+            .filter(key => key.startsWith('product:'))
+            .sort((a, b) => _ac[b].t - _ac[a].t)
+            .slice(0, 8);
         Object.keys(_ac).forEach(key => {
-            if (_AC_PERSIST_KEYS.has(key)) subset[key] = _ac[key];
+            if (
+                _AC_PERSIST_KEYS.has(key)
+                || key.startsWith('subcategories:')
+                || recentProductKeys.includes(key)
+                || recentProductDetails.includes(key)
+            ) {
+                subset[key] = _ac[key];
+            }
         });
         sessionStorage.setItem(_AC_STORE_KEY, JSON.stringify(subset));
     } catch (_) {}
@@ -120,6 +143,7 @@ function acSet(key, val) {
 function acDel(...keys) {
     keys.forEach(k => {
         delete _ac[k];
+        delete _acPending[k];
         _acGen[k] = (_acGen[k] || 0) + 1;
     });
     acPersist();
@@ -136,23 +160,85 @@ function markAdminSession(active) {
     document.documentElement.classList.toggle('admin-session', active);
 }
 
-function exitToLogin() {
-    _appReady = false;
-    markAdminSession(false);
-    AdminAPI.clearSession();
-    acClear();
-    document.getElementById('admin-shell').classList.add('hidden');
-    document.getElementById('access-denied').classList.add('hidden');
-    document.getElementById('login-screen').classList.remove('hidden');
+function syncAdminTokenFromCustomerSession() {
+    if (AdminAPI.getToken()) return AdminAPI.getToken();
+    if (typeof CustomerAPI === 'undefined') return null;
+    const user = CustomerAPI.getUser();
+    const token = CustomerAPI.getToken();
+    if (token && user?.role === 'admin') {
+        AdminAPI.setSession(token, user);
+        return token;
+    }
+    return null;
 }
 
-function showAccessDenied() {
+async function clearAllAuthSessions() {
+    const adminToken = AdminAPI.getToken();
+    const customerToken = typeof CustomerAPI !== 'undefined' ? CustomerAPI.getToken() : null;
+    if (adminToken) await AdminAPI.logout().catch(() => {});
+    if (customerToken && customerToken !== adminToken) {
+        await CustomerAPI.logout().catch(() => {});
+    }
+    AdminAPI.clearSession();
+    if (typeof CustomerAPI !== 'undefined') CustomerAPI.clearSession();
+}
+
+function redirectToLogin() {
+    window.location.replace('/login.html?next=/admin');
+}
+
+function redirectToStorefront() {
+    window.location.replace('/index.html');
+}
+
+function showAdminExitLoading(message) {
+    let overlay = document.getElementById('admin-exit-loading');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'admin-exit-loading';
+        overlay.className = 'login-loading-overlay';
+        overlay.setAttribute('role', 'status');
+        overlay.innerHTML = `
+            <div class="login-loading-card">
+                <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
+                <p id="admin-exit-loading-msg">Please wait…</p>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+    }
+    const msg = overlay.querySelector('#admin-exit-loading-msg');
+    if (msg) msg.textContent = message || 'Please wait…';
+    overlay.hidden = false;
+    document.body.classList.add('login-loading-active');
+}
+
+function waitAtLeastAdmin(startedAt, minMs) {
+    const wait = Math.max(0, minMs - (Date.now() - startedAt));
+    return new Promise((resolve) => setTimeout(resolve, wait));
+}
+
+async function exitToStorefront() {
+    const started = Date.now();
+    showAdminExitLoading('Signing you out…');
     _appReady = false;
     markAdminSession(false);
-    AdminAPI.clearSession();
-    document.getElementById('admin-shell').classList.add('hidden');
-    document.getElementById('login-screen').classList.add('hidden');
-    document.getElementById('access-denied').classList.remove('hidden');
+    acClear();
+    document.getElementById('admin-shell')?.classList.add('hidden');
+    await clearAllAuthSessions();
+    await waitAtLeastAdmin(started, 600);
+    redirectToStorefront();
+}
+
+async function exitToLogin() {
+    const started = Date.now();
+    showAdminExitLoading('Signing you out…');
+    _appReady = false;
+    markAdminSession(false);
+    acClear();
+    document.getElementById('admin-shell')?.classList.add('hidden');
+    await clearAllAuthSessions();
+    await waitAtLeastAdmin(started, 600);
+    redirectToLogin();
 }
 
 function sleep(ms) {
@@ -160,14 +246,6 @@ function sleep(ms) {
 }
 
 let _appReady = false;
-
-function restoreAdminShell(user) {
-    markAdminSession(true);
-    document.getElementById('login-screen').classList.add('hidden');
-    document.getElementById('access-denied').classList.add('hidden');
-    document.getElementById('admin-shell').classList.remove('hidden');
-    enterApp(user);
-}
 
 async function validateAdminSession() {
     const token = AdminAPI.getToken();
@@ -178,7 +256,7 @@ async function validateAdminSession() {
         try {
             const user = await AdminAPI.me();
             if (user.role !== 'admin') {
-                showAccessDenied();
+                await exitToStorefront();
                 return false;
             }
             AdminAPI.setSession(token, user);
@@ -186,7 +264,7 @@ async function validateAdminSession() {
         } catch (err) {
             const status = err?.status;
             if (status === 401 || status === 403) {
-                exitToLogin();
+                await exitToLogin();
                 return false;
             }
             if (attempt < 2) await sleep(350 * (attempt + 1));
@@ -216,10 +294,12 @@ function updateNotificationBadge(stats) {
     }
 }
 function acClearProducts() {
-    Object.keys(_ac).filter(k => k.startsWith('products:')).forEach(k => {
+    Object.keys(_ac).filter(k => k.startsWith('products:') || k.startsWith('product:')).forEach(k => {
         delete _ac[k];
+        delete _acPending[k];
         _acGen[k] = (_acGen[k] || 0) + 1;
     });
+    acPersist();
     acDel('stats');
 }
 
@@ -227,17 +307,59 @@ async function acFetch(key, fn, { fresh = false } = {}) {
     if (!fresh) {
         const hit = acGet(key);
         if (hit !== null) return hit;
+        if (_acPending[key]) return _acPending[key];
     }
     const gen = _acGen[key] || 0;
-    const data = await fn();
-    // Ignore stale in-flight responses invalidated while the request was pending.
-    if ((_acGen[key] || 0) === gen) acSet(key, data);
-    return data;
+    const pending = Promise.resolve().then(fn);
+    if (!fresh) _acPending[key] = pending;
+    try {
+        const data = await pending;
+        // Ignore stale in-flight responses invalidated while the request was pending.
+        if ((_acGen[key] || 0) === gen) acSet(key, data);
+        return data;
+    } finally {
+        if (_acPending[key] === pending) delete _acPending[key];
+    }
 }
 
-/** Show full-page loader only when data is not already cached. */
-async function acFetchLoading(key, fn, { fresh = false } = {}) {
-    return acFetch(key, fn, { fresh });
+/** Refresh cached data in the background after painting a stale snapshot. */
+function acRevalidate(key, fn, onData, { isStale } = {}) {
+    setTimeout(async () => {
+        try {
+            const data = await acFetch(key, fn, { fresh: true });
+            if (isStale && isStale()) return;
+            onData(data);
+        } catch (err) {
+            if (err.name !== 'AbortError') console.error(err);
+        }
+    }, 0);
+}
+
+function closeGenericModal() {
+    const modal = document.getElementById('generic-modal');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    const saveBtn = document.getElementById('generic-modal-save');
+    if (saveBtn) {
+        saveBtn.style.display = '';
+        saveBtn.onclick = null;
+    }
+    const deleteBtn = document.getElementById('generic-modal-delete');
+    if (deleteBtn) {
+        deleteBtn.classList.add('hidden');
+        deleteBtn.onclick = null;
+    }
+    const activeWrap = document.getElementById('generic-modal-active-wrap');
+    if (activeWrap) activeWrap.classList.add('hidden');
+    const activeChk = document.getElementById('m-ban-active');
+    if (activeChk) activeChk.checked = true;
+    const activeState = document.getElementById('generic-modal-active-state');
+    if (activeState) {
+        activeState.textContent = 'Active';
+        activeState.className = 'modal-active-label modal-active-label--on';
+    }
+    const body = document.getElementById('generic-modal-body');
+    if (body) body.innerHTML = '';
 }
 
 function sectionSpinner() {
@@ -261,21 +383,17 @@ function setProductsTableLoading(loading) {
 let _productsRenderGen = 0;
 
 function prefetchAdminData() {
-    Promise.all([
-        acFetch('dashboard', () => AdminAPI.dashboard()),
+    const warm = () => Promise.all([
         acFetch('stats', () => AdminAPI.stats()),
         acFetch('categories', () => AdminAPI.categories()),
-        acFetch('spotlight', () => AdminAPI.spotlight()),
-        acFetch('banners', () => AdminAPI.banners()),
-        acFetch('cultures', () => AdminAPI.cultures()),
-        acFetch('testimonials', () => AdminAPI.testimonials()),
-        acFetch('newsletter', () => AdminAPI.newsletter()),
         acFetch('settings', () => AdminAPI.settings()),
-        acFetch(
-            'products:' + JSON.stringify({ page: 1, per_page: 25, search: '', category_id: '', subcategory_id: '', stock: '', sort: 'none' }),
-            () => AdminAPI.products({ page: 1, per_page: 25, sort: 'none' }),
-        ),
     ]).catch(() => {});
+
+    if ('requestIdleCallback' in window) {
+        requestIdleCallback(warm, { timeout: 2000 });
+    } else {
+        setTimeout(warm, 500);
+    }
 }
 
 /* ── App state ──────────────────────────────────────────── */
@@ -285,6 +403,7 @@ const state = {
     subcategories: [],
     selectedCategoryId: null,
     products: { page: 1, perPage: 25, items: [], total: 0, selected: new Set() },
+    discountedSelected: new Set(),
     editingProductId: null,
     productImages: [],
     pendingImageFiles: [],
@@ -308,7 +427,7 @@ const DASHBOARD_SPOTLIGHT_KPIS = SPOTLIGHT_PRODUCT_SECTIONS.map(s => ({
 
 const ADMIN_SECTIONS = new Set([
     'dashboard', 'products', 'categories', 'spotlight',
-    'banners', 'cultures', 'testimonials', 'contact-messages', 'newsletter', 'discounts', 'coupons', 'settings',
+    'banners', 'cultures', 'testimonials', 'contact-messages', 'discounts', 'coupons', 'settings',
 ]);
 const ADMIN_SECTION_KEY = 'gms_admin_section_v1';
 
@@ -347,48 +466,17 @@ function showSection(name, { updateUrl = true } = {}) {
 async function loadSection(name) {
     try {
         switch (name) {
-            case 'dashboard':
-                await renderDashboard();
-                renderDashboard({ fresh: true }).catch(console.error);
-                break;
+            case 'dashboard': await renderDashboard(); break;
             case 'products': await renderProducts(); break;
             case 'categories': await renderCategories(); break;
-            case 'spotlight':
-                await renderSpotlight();
-                renderSpotlight({ fresh: true }).catch(console.error);
-                break;
-            case 'banners':
-                await renderBanners();
-                renderBanners({ fresh: true }).catch(console.error);
-                break;
-            case 'cultures':
-                await renderCultures();
-                renderCultures({ fresh: true }).catch(console.error);
-                break;
-            case 'testimonials':
-                await renderTestimonials();
-                renderTestimonials({ fresh: true }).catch(console.error);
-                break;
-            case 'contact-messages':
-                await renderContactMessages();
-                renderContactMessages({ fresh: true }).catch(console.error);
-                break;
-            case 'newsletter':
-                await renderNewsletter();
-                renderNewsletter({ fresh: true }).catch(console.error);
-                break;
-            case 'discounts':
-                await renderDiscounts();
-                renderDiscounts({ fresh: true }).catch(console.error);
-                break;
-            case 'coupons':
-                await renderCoupons();
-                renderCoupons({ fresh: true }).catch(console.error);
-                break;
-            case 'settings':
-                await renderSettings();
-                renderSettings({ fresh: true }).catch(console.error);
-                break;
+            case 'spotlight': await renderSpotlight(); break;
+            case 'banners': await renderBanners(); break;
+            case 'cultures': await renderCultures(); break;
+            case 'testimonials': await renderTestimonials(); break;
+            case 'contact-messages': await renderContactMessages(); break;
+            case 'discounts': await renderDiscounts(); break;
+            case 'coupons': await renderCoupons(); break;
+            case 'settings': await renderSettings(); break;
         }
     } catch (e) {
         console.error(e);
@@ -397,34 +485,32 @@ async function loadSection(name) {
 
 /* ── Auth ───────────────────────────────────────────────── */
 async function initAuth() {
-    const errEl = document.getElementById('login-error');
     if (window.location.protocol === 'file:') {
-        markAdminSession(false);
-        document.getElementById('login-screen').classList.remove('hidden');
-        errEl.textContent = 'Open the admin portal via the server: http://127.0.0.1:8000/admin (run python run.py first). Do not open admin.html as a file.';
-        errEl.classList.remove('hidden');
+        document.body.innerHTML = '<p style="padding:2rem;font-family:Inter,sans-serif;max-width:36rem;margin:0 auto">Open store management via the site: <strong>http://127.0.0.1:8000/admin</strong> after running <code>python run.py</code>. Do not open admin.html as a file.</p>';
         return;
     }
 
-    const token = AdminAPI.getToken();
+    const token = syncAdminTokenFromCustomerSession() || AdminAPI.getToken();
     if (!token) {
-        markAdminSession(false);
-        document.getElementById('login-screen').classList.remove('hidden');
-        try {
-            await fetch(AdminAPI.url('/api/v1/health'), { method: 'GET' });
-        } catch (_) {
-            errEl.textContent = 'Cannot reach the server. Run: python run.py — then open http://127.0.0.1:8000/admin';
-            errEl.classList.remove('hidden');
-        }
+        redirectToLogin();
         return;
     }
 
     acHydrate();
+    const cachedUser = AdminAPI.getUser();
+
+    // Restore a previously authenticated admin session immediately. Every API
+    // request is still protected server-side, while validation runs quietly.
+    if (cachedUser?.role === 'admin') {
+        enterApp(cachedUser);
+        validateAdminSession().catch(() => showSessionWarning());
+        return;
+    }
+
     UI.showLoading();
     try {
         const valid = await validateAdminSession();
-        if (!valid) return;
-        enterApp(AdminAPI.getUser());
+        if (valid) enterApp(AdminAPI.getUser());
     } finally {
         UI.hideLoading();
     }
@@ -434,7 +520,9 @@ function enterApp(user) {
     if (_appReady) return;
     _appReady = true;
     markAdminSession(true);
-    document.getElementById('login-screen').classList.add('hidden');
+    if (typeof CustomerAPI !== 'undefined' && user?.role === 'admin') {
+        CustomerAPI.setSession(AdminAPI.getToken(), user);
+    }
     document.getElementById('admin-shell').classList.remove('hidden');
     document.getElementById('dashboard-date').textContent = new Date().toLocaleDateString('en-GB', {
         weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
@@ -451,36 +539,6 @@ function enterApp(user) {
 
 function siteLogoUrl() {
     return (typeof getSiteSettings === 'function' && getSiteSettings().store_logo_url) || '';
-}
-
-async function handleLogin(e) {
-    e.preventDefault();
-    const email = document.getElementById('login-email').value.trim();
-    const password = document.getElementById('login-password').value;
-    const errEl = document.getElementById('login-error');
-    errEl.classList.add('hidden');
-    try {
-        UI.showLoading();
-        const res = await AdminAPI.login(email, password);
-        if (res.user.role !== 'admin') {
-            document.getElementById('login-screen').classList.add('hidden');
-            document.getElementById('access-denied').classList.remove('hidden');
-            return;
-        }
-        AdminAPI.setSession(res.session_token, res.user);
-        _appReady = false;
-        enterApp(res.user);
-        UI.toast('Signed in successfully');
-    } catch (err) {
-        let msg = err.message || 'Invalid credentials';
-        if (msg.includes('NetworkError') || msg.includes('Failed to fetch')) {
-            msg = 'Cannot connect to the server. Run python run.py and open http://127.0.0.1:8000/admin';
-        }
-        errEl.textContent = msg;
-        errEl.classList.remove('hidden');
-    } finally {
-        UI.hideLoading();
-    }
 }
 
 /* ── Dashboard ──────────────────────────────────────────── */
@@ -514,7 +572,10 @@ async function renderDashboard({ fresh = false } = {}) {
     const cached = !fresh ? acGet('dashboard') : null;
     if (cached) {
         paintDashboard(cached);
-        if (!fresh) return;
+        acRevalidate('dashboard', () => AdminAPI.dashboard(), paintDashboard, {
+            isStale: () => state.section !== 'dashboard',
+        });
+        return;
     }
 
     if (!grid.querySelector('.kpi-card')) grid.innerHTML = sectionSpinner();
@@ -610,7 +671,10 @@ async function renderSpotlight({ fresh = false } = {}) {
     const cached = !fresh ? acGet('spotlight') : null;
     if (cached) {
         paintSpotlightGrid(cached);
-        if (!fresh) return;
+        acRevalidate('spotlight', () => AdminAPI.spotlight(), paintSpotlightGrid, {
+            isStale: () => state.section !== 'spotlight',
+        });
+        return;
     }
 
     if (!grid.querySelector('.spotlight-cell')) {
@@ -625,7 +689,7 @@ async function renderSpotlight({ fresh = false } = {}) {
             <div class="adm-card" style="padding:24px">
                 <p style="margin:0 0 8px;color:var(--adm-danger)"><strong>Could not load Spotlight</strong></p>
                 <p style="margin:0;color:var(--adm-muted)">${UI.esc(e.message || 'Request failed')}</p>
-                <p style="margin:12px 0 0;color:var(--adm-muted);font-size:.875rem">Restart the admin server (<code>python run.py</code>) and hard-refresh this page (Ctrl+F5).</p>
+                <p style="margin:12px 0 0;color:var(--adm-muted);font-size:.875rem">Restart the site (<code>python run.py</code>) and hard-refresh this page (Ctrl+F5).</p>
             </div>`;
     }
 }
@@ -742,7 +806,10 @@ async function openSpotlightProductPicker(sectionKey, flagField) {
 
     const listEl = document.getElementById('spotlight-picker-list');
     const renderPicker = async (search = '') => {
-        const res = await AdminAPI.products({ search, per_page: 40, page: 1 });
+        const res = await AdminAPI.products(
+            { search, per_page: 40, page: 1 },
+            { scope: 'spotlight-picker' },
+        );
         const available = (res.items || []).filter(p => !inSection.has(p.productId));
         listEl.innerHTML = available.length
             ? available.map(p => `
@@ -755,8 +822,7 @@ async function openSpotlightProductPicker(sectionKey, flagField) {
         listEl.querySelectorAll('[data-pick-product]').forEach(btn => {
             btn.onclick = async () => {
                 await UI.withLoading(() => AdminAPI.updateProduct(btn.dataset.pickProduct, { [flagField]: true }));
-                document.getElementById('generic-modal').classList.add('hidden');
-                document.getElementById('generic-modal-save').style.display = '';
+                closeGenericModal();
                 UI.toast('Product added to section');
                 acDel('spotlight', 'dashboard'); acClearProducts();
                 renderSpotlight({ fresh: true });
@@ -791,18 +857,22 @@ function getProductsFilterParams(overrides = {}) {
     };
 }
 
+function populateProductsCategoryFilter() {
+    const catSel = document.getElementById('products-cat-filter');
+    if (!catSel || catSel.options.length > 1) return;
+    state.categories.forEach(c => {
+        const option = document.createElement('option');
+        option.value = c.category_id;
+        option.textContent = c.category_name;
+        catSel.appendChild(option);
+    });
+}
+
 async function renderProducts({ fresh = false } = {}) {
     const gen = ++_productsRenderGen;
-    await loadCategoriesCache();
-    const catSel = document.getElementById('products-cat-filter');
-    if (catSel.options.length <= 1) {
-        state.categories.forEach(c => {
-            const o = document.createElement('option');
-            o.value = c.category_id;
-            o.textContent = c.category_name;
-            catSel.appendChild(o);
-        });
-    }
+    loadCategoriesCache()
+        .then(populateProductsCategoryFilter)
+        .catch(err => console.error(err));
 
     const params = getProductsFilterParams({
         page: state.products.page,
@@ -815,6 +885,20 @@ async function renderProducts({ fresh = false } = {}) {
     const dataCached = !fresh && acGet(productsKey);
     if (dataCached) {
         paintProductsTable(dataCached, statsCached);
+        // Stale-while-revalidate: cached rows paint instantly, then refresh
+        // quietly so changes from another admin session still appear.
+        setTimeout(async () => {
+            try {
+                const latest = await acFetch(
+                    productsKey,
+                    () => AdminAPI.products(params, { scope: 'products-list' }),
+                    { fresh: true },
+                );
+                if (gen === _productsRenderGen) paintProductsTable(latest, statsCached);
+            } catch (err) {
+                if (err.name !== 'AbortError') console.error(err);
+            }
+        }, 0);
         return;
     }
 
@@ -822,7 +906,7 @@ async function renderProducts({ fresh = false } = {}) {
 
     try {
         const fetches = [
-            acFetch(productsKey, () => AdminAPI.products(params), { fresh }),
+            acFetch(productsKey, () => AdminAPI.products(params, { scope: 'products-list' }), { fresh }),
         ];
         if (!statsCached) {
             fetches.push(acFetch('stats', () => AdminAPI.stats(), { fresh }));
@@ -899,7 +983,7 @@ function bindProductTableHeaderSort() {
             const cur = sel.value;
             sel.value = cur === options[0] ? options[1] : options[0];
             state.products.page = 1;
-            renderProducts({ fresh: true });
+            renderProducts();
         };
     });
 }
@@ -936,7 +1020,7 @@ function renderProductsPagination(data) {
     document.getElementById('products-per-page').onchange = (e) => {
         state.products.perPage = parseInt(e.target.value, 10);
         state.products.page = 1;
-        renderProducts({ fresh: true });
+        renderProducts();
     };
     const prevBtn = document.getElementById('prod-prev');
     const nextBtn = document.getElementById('prod-next');
@@ -1083,7 +1167,7 @@ function renderProductImageGallery() {
             await UI.withLoading(() => AdminAPI.setPrimaryProductImage(state.editingProductId, btn.dataset.setPrimary));
             state.productImages.forEach(img => { img.isPrimary = String(img.id) === btn.dataset.setPrimary; });
             renderProductImageGallery();
-            acClearProducts();
+            acClearProducts(); acDel(`product:${state.editingProductId}`);
             UI.toast('Primary image updated');
         };
     });
@@ -1095,7 +1179,7 @@ function renderProductImageGallery() {
             await UI.withLoading(() => AdminAPI.deleteProductImage(state.editingProductId, btn.dataset.delImage));
             state.productImages = state.productImages.filter(img => String(img.id) !== btn.dataset.delImage);
             renderProductImageGallery();
-            acClearProducts();
+            acClearProducts(); acDel(`product:${state.editingProductId}`);
             UI.toast('Image removed');
         };
     });
@@ -1120,16 +1204,6 @@ function renderProductImageGallery() {
     });
 }
 
-async function loadProductImages(productId) {
-    if (!productId) {
-        clearProductImagesState();
-        return;
-    }
-    const images = await AdminAPI.productImages(productId);
-    setProductImages(images);
-    updateProductImagesSaveHint();
-}
-
 async function addProductImageFromUrl() {
     const url = document.getElementById('pf-image-url').value.trim();
     if (!url) {
@@ -1145,7 +1219,7 @@ async function addProductImageFromUrl() {
         if (img.isPrimary) state.productImages.forEach(i => { if (i.id !== img.id) i.isPrimary = false; });
         document.getElementById('pf-image-url').value = '';
         renderProductImageGallery();
-        acClearProducts();
+        acClearProducts(); acDel(`product:${state.editingProductId}`);
         UI.toast('Image added');
     } else {
         state.pendingImageUrls.push(url);
@@ -1174,7 +1248,7 @@ async function handleProductImageFiles(fileList) {
         state.productImages.push(...added);
         document.getElementById('pf-image-file').value = '';
         renderProductImageGallery();
-        acClearProducts();
+        acClearProducts(); acDel(`product:${state.editingProductId}`);
         UI.toast(added.length > 1 ? `${added.length} images uploaded` : 'Image uploaded');
     } else {
         files.forEach(file => {
@@ -1219,7 +1293,7 @@ async function populateBrandList() {
     const list = document.getElementById('brand-list');
     if (!list || list.dataset.loaded) return;
     try {
-        const brands = await AdminAPI.brands();
+        const brands = await acFetch('brands', () => AdminAPI.brands());
         list.innerHTML = brands.map(b => `<option value="${UI.esc(b)}">`).join('');
         list.dataset.loaded = '1';
     } catch (_) {}
@@ -1230,7 +1304,7 @@ async function populateKitchenCultureSelect(selected = '') {
     if (!sel) return;
     let options = [{ key: '', label: 'None' }];
     try {
-        const rows = await AdminAPI.kitchenCultures();
+        const rows = await acFetch('kitchenCultures', () => AdminAPI.kitchenCultures());
         if (Array.isArray(rows) && rows.length) options = [{ key: '', label: 'None' }, ...rows];
     } catch (_) {}
     sel.innerHTML = options.map(o =>
@@ -1238,44 +1312,81 @@ async function populateKitchenCultureSelect(selected = '') {
     ).join('');
 }
 
+let _productPanelGen = 0;
+
 async function openProductPanel(productId = null) {
+    const gen = ++_productPanelGen;
     state.editingProductId = productId;
     document.getElementById('product-panel-title').textContent = productId ? 'Edit Product' : 'Add New Product';
-    await loadCategoriesCache();
-    populateBrandList().catch(() => {});
-    await populateKitchenCultureSelect();
+    const modal = document.getElementById('product-modal');
+    const saveBtn = document.getElementById('save-product-btn');
+    const deleteBtn = document.getElementById('delete-product-btn');
     const catSel = document.getElementById('pf-category');
-    catSel.innerHTML = state.categories.map(c => `<option value="${c.category_id}">${UI.esc(c.category_name)}</option>`).join('');
-    catSel.onchange = () => populateSubcatSelect('pf-subcategory', catSel.value);
 
-    if (productId) {
-        const p = await UI.withLoading(() => AdminAPI.product(productId));
-        if (p) {
-            fillProductForm(p);
-            await populateKitchenCultureSelect(p.kitchenCulture || '');
-            await loadProductImages(p.productId);
-        }
-    } else {
-        clearProductForm();
-        clearProductImagesState();
-    }
-    populateSubcatSelect('pf-subcategory', catSel.value);
     document.querySelectorAll('#product-tabs .adm-tab').forEach((t, i) => {
         t.classList.toggle('active', i === 0);
     });
     ['details', 'pricing', 'images', 'visibility'].forEach((name, i) => {
         document.getElementById(`tab-${name}`).classList.toggle('hidden', i !== 0);
     });
-    // Show Delete button only when editing an existing product
-    const deleteBtn = document.getElementById('delete-product-btn');
     deleteBtn.style.display = productId ? '' : 'none';
     deleteBtn.onclick = productId ? () => confirmDeleteProduct(productId) : null;
+    saveBtn.disabled = !!productId;
 
-    document.getElementById('product-modal').classList.remove('hidden');
+    if (productId) {
+        const row = state.products.items.find(p => p.productId === productId);
+        if (row) fillProductForm(row);
+        else clearProductForm();
+    } else {
+        clearProductForm();
+    }
+
+    clearProductImagesState();
+    modal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
+
+    let ready = false;
+    try {
+        const [categories, product] = await Promise.all([
+            loadCategoriesCache(),
+            productId
+                ? acFetch(`product:${productId}`, () => AdminAPI.product(productId))
+                : Promise.resolve(null),
+            populateBrandList(),
+            populateKitchenCultureSelect(),
+        ]);
+        if (gen !== _productPanelGen) return;
+
+        catSel.innerHTML = categories.map(c =>
+            `<option value="${c.category_id}">${UI.esc(c.category_name)}</option>`
+        ).join('');
+        catSel.onchange = () => populateSubcatSelect('pf-subcategory', catSel.value);
+
+        if (product) {
+            fillProductForm(product);
+            setProductImages(product.images || []);
+            document.getElementById('pf-kitchen-culture').value = product.kitchenCulture || '';
+        } else if (!productId) {
+            clearProductForm();
+        }
+
+        await populateSubcatSelect(
+            'pf-subcategory',
+            product?.categoryId || catSel.value,
+            product?.subCategoryId,
+        );
+        ready = true;
+    } catch (err) {
+        if (gen === _productPanelGen) {
+            UI.toast(err.message || 'Could not load product details', 'error');
+        }
+    } finally {
+        if (gen === _productPanelGen) saveBtn.disabled = !ready;
+    }
 }
 
 function closeProductModal() {
+    _productPanelGen++;
     document.getElementById('product-modal').classList.add('hidden');
     document.body.style.overflow = '';
 }
@@ -1322,7 +1433,6 @@ function fillProductForm(p) {
     const kitchenSel = document.getElementById('pf-kitchen-culture');
     if (kitchenSel) kitchenSel.value = p.kitchenCulture || '';
     updateDiscountPreview();
-    populateSubcatSelect('pf-subcategory', p.categoryId, p.subCategoryId);
 }
 
 function clearProductForm() {
@@ -1341,7 +1451,14 @@ function clearProductForm() {
 }
 
 async function populateSubcatSelect(selId, catId, selected) {
-    const subs = await AdminAPI.subcategories(catId);
+    if (!catId) {
+        document.getElementById(selId).innerHTML = '';
+        return;
+    }
+    const subs = await acFetch(
+        `subcategories:${catId}`,
+        () => AdminAPI.subcategories(catId),
+    );
     const sel = document.getElementById(selId);
     sel.innerHTML = subs.map(s => `<option value="${s.subcategory_id}">${UI.esc(s.subcategory_name)}</option>`).join('');
     if (selected) sel.value = selected;
@@ -1389,7 +1506,7 @@ async function saveProduct() {
         await uploadPendingProductImages(productId);
     });
     closeProductModal();
-    acClearProducts(); acDel('stats', 'dashboard', 'spotlight', 'discountedProducts');
+    acClearProducts(); acDel(`product:${productId}`, 'stats', 'dashboard', 'spotlight', 'discountedProducts');
     UI.toast(isNew ? 'Product created successfully' : 'Product updated successfully');
     if (state.section === 'spotlight') renderSpotlight({ fresh: true });
     else if (state.section === 'dashboard') renderDashboard();
@@ -1576,7 +1693,7 @@ function openCategoryModal(catId = null) {
             is_active: document.getElementById('m-cat-active').checked,
         };
         await UI.withLoading(() => cat ? AdminAPI.updateCategory(cat.category_id, body) : AdminAPI.createCategory(body));
-        document.getElementById('generic-modal').classList.add('hidden');
+        closeGenericModal();
         acDel('categories', 'stats'); state.categories = [];
         UI.toast('Category saved');
         renderCategories();
@@ -1612,7 +1729,7 @@ function openSubcategoryModal(subId = null, subs = []) {
         await UI.withLoading(() => sub
             ? AdminAPI.updateSubcategory(sub.subcategory_id, body)
             : AdminAPI.createSubcategory(body));
-        document.getElementById('generic-modal').classList.add('hidden');
+        closeGenericModal();
         acDel('categories', 'subs:' + state.selectedCategoryId);
         state.categories = [];
         UI.toast(sub ? 'Subcategory updated' : 'Subcategory created');
@@ -1708,7 +1825,10 @@ async function loadBannerSubcategoryOptions(categoryId, selectedSubName = '') {
         sel.disabled = true;
         return;
     }
-    const subs = await AdminAPI.subcategories(categoryId);
+    const subs = await acFetch(
+        `subcategories:${categoryId || 'all'}`,
+        () => AdminAPI.subcategories(categoryId),
+    );
     sel.disabled = false;
     sel.innerHTML = '<option value="">Select subcategory…</option>' + subs.map(s =>
         `<option value="${UI.esc(s.subcategory_name)}"${s.subcategory_name === selectedSubName ? ' selected' : ''}>${UI.esc(s.subcategory_name)}</option>`
@@ -1782,7 +1902,10 @@ async function renderBanners({ fresh = false } = {}) {
     const cached = !fresh ? acGet('banners') : null;
     if (cached) {
         paintBanners(cached);
-        if (!fresh) return cached;
+        acRevalidate('banners', () => AdminAPI.banners(), paintBanners, {
+            isStale: () => state.section !== 'banners',
+        });
+        return cached;
     }
     if (scrollActive && !scrollActive.querySelector('.banner-card, p')) {
         scrollActive.innerHTML = sectionSpinner();
@@ -1964,7 +2087,7 @@ async function openBannerModal(id = null, banners = []) {
         deleteBtn.onclick = async () => {
             if (!confirm(`Delete this banner? This cannot be undone.`)) return;
             await UI.withLoading(() => AdminAPI.deleteBanner(b.id));
-            document.getElementById('generic-modal').classList.add('hidden');
+            closeGenericModal();
             acDel('banners');
             UI.toast('Banner deleted');
             renderBanners({ fresh: true });
@@ -2001,7 +2124,7 @@ async function openBannerModal(id = null, banners = []) {
         if (linkType === 'subcategory' && !body.link_url) { UI.toast('Select a subcategory', 'error'); return; }
 
         await UI.withLoading(() => b ? AdminAPI.updateBanner(b.id, body) : AdminAPI.createBanner(body));
-        document.getElementById('generic-modal').classList.add('hidden');
+        closeGenericModal();
         acDel('banners');
         UI.toast('Banner saved');
         renderBanners({ fresh: true });
@@ -2071,7 +2194,10 @@ async function renderCultures({ fresh = false } = {}) {
     const cached = !fresh ? acGet('cultures') : null;
     if (cached) {
         paintCultures(cached);
-        if (!fresh) return cached;
+        acRevalidate('cultures', () => AdminAPI.cultures(), paintCultures, {
+            isStale: () => state.section !== 'cultures',
+        });
+        return cached;
     }
     if (scrollActive && !scrollActive.querySelector('.banner-card, p')) {
         scrollActive.innerHTML = sectionSpinner();
@@ -2381,7 +2507,6 @@ async function openCultureModal(id = null, cultures = []) {
     // Close buttons
     document.getElementById('culture-modal-close').onclick = _closeCultureModal;
     document.getElementById('culture-modal-cancel').onclick = _closeCultureModal;
-    document.getElementById('culture-modal').onclick = e => { if (e.target === document.getElementById('culture-modal')) _closeCultureModal(); };
 
     // Save
     document.getElementById('culture-modal-save').onclick = async () => {
@@ -2415,7 +2540,10 @@ async function renderTestimonials({ fresh = false } = {}) {
     const cached = !fresh ? acGet('testimonials') : null;
     if (cached) {
         paintTestimonials(cached);
-        if (!fresh) return;
+        acRevalidate('testimonials', () => AdminAPI.testimonials(), paintTestimonials, {
+            isStale: () => state.section !== 'testimonials',
+        });
+        return;
     }
     if (tbody && !tbody.querySelector('tr')) {
         tbody.innerHTML = `<tr><td colspan="7" class="adm-table-loading">${sectionSpinner()}</td></tr>`;
@@ -2487,7 +2615,7 @@ function openTestimonialModal(id = null, items = [], featuredDefault = false) {
         };
         if (!body.customer_name || !body.quote) { UI.toast('Name and quote required', 'error'); return; }
         await UI.withLoading(() => t ? AdminAPI.updateTestimonial(t.id, body) : AdminAPI.createTestimonial(body));
-        document.getElementById('generic-modal').classList.add('hidden');
+        closeGenericModal();
         acDel('testimonials', 'spotlight');
         UI.toast('Testimonial saved');
         if (state.section === 'spotlight') renderSpotlight({ fresh: true });
@@ -2501,13 +2629,29 @@ async function renderContactMessages({ fresh = false } = {}) {
     const subtitle = document.getElementById('contact-messages-subtitle');
     if (!tbody) return;
 
+    const cached = !fresh ? acGet('contactMessages') : null;
+    if (cached) {
+        paintContactMessages(cached);
+        acRevalidate('contactMessages', () => AdminAPI.contactSubmissions(), paintContactMessages, {
+            isStale: () => state.section !== 'contact-messages',
+        });
+        return;
+    }
+
     let data;
     try {
-        data = await API.contactSubmissions();
+        data = await acFetch('contactMessages', () => AdminAPI.contactSubmissions(), { fresh });
     } catch (e) {
         tbody.innerHTML = `<tr><td colspan="8" class="adm-empty">Failed to load messages.</td></tr>`;
         return;
     }
+    paintContactMessages(data);
+}
+
+function paintContactMessages(data) {
+    const tbody = document.querySelector('#contact-messages-table tbody');
+    const subtitle = document.getElementById('contact-messages-subtitle');
+    if (!tbody || !data) return;
 
     // Update unread badge in nav
     const badge = document.getElementById('contact-unread-badge');
@@ -2548,7 +2692,8 @@ async function renderContactMessages({ fresh = false } = {}) {
 
 async function markContactRead(id) {
     try {
-        await API.markContactRead(id);
+        await AdminAPI.markContactRead(id);
+        acDel('contactMessages');
         await renderContactMessages({ fresh: true });
     } catch(e) { UI.toast('Failed to mark as read', 'error'); }
 }
@@ -2556,111 +2701,11 @@ async function markContactRead(id) {
 async function deleteContactMsg(id) {
     if (!confirm('Delete this message?')) return;
     try {
-        await API.deleteContactSubmission(id);
+        await AdminAPI.deleteContactSubmission(id);
+        acDel('contactMessages');
         await renderContactMessages({ fresh: true });
         UI.toast('Message deleted');
     } catch(e) { UI.toast('Failed to delete', 'error'); }
-}
-
-/* ── Newsletter ─────────────────────────────────────────── */
-let newsletterData = [];
-async function renderNewsletter({ fresh = false } = {}) {
-    const tbody = document.querySelector('#newsletter-table tbody');
-    const cached = !fresh ? acGet('newsletter') : null;
-    if (cached) {
-        paintNewsletter(cached);
-        if (!fresh) return;
-    }
-    if (tbody && !tbody.querySelector('tr')) {
-        tbody.innerHTML = `<tr><td colspan="4" class="adm-table-loading">${sectionSpinner()}</td></tr>`;
-    }
-    const data = await acFetch('newsletter', () => AdminAPI.newsletter(), { fresh });
-    paintNewsletter(data);
-}
-
-function paintNewsletter(data) {
-    newsletterData = data.items;
-    document.getElementById('newsletter-subtitle').textContent =
-        `${data.stats.total} subscribers · ${data.stats.active} active`;
-    document.getElementById('newsletter-stats').innerHTML = [
-        ['Total Subscribers', data.stats.total],
-        ['Active', data.stats.active],
-        ['Unsubscribed', data.stats.unsubscribed],
-        ['New This Week', data.stats.newThisWeek],
-    ].map(([l, v]) => `<div class="stat-mini"><strong>${v}</strong><span>${l}</span></div>`).join('');
-
-    document.querySelector('#newsletter-table tbody').innerHTML = data.items.map(s => `
-        <tr>
-            <td>${UI.esc(s.email)}</td>
-            <td>${UI.fmtDate(s.subscribedAt)}</td>
-            <td>${s.isActive ? UI.statusBadge('active') : UI.statusBadge('inactive')}</td>
-            <td><div class="adm-table-actions">
-                ${s.isActive ? `<button type="button" data-unsub-newsletter="${s.id}" title="Unsubscribe"><i class="fa-solid fa-user-slash"></i></button>` : ''}
-                <button type="button" data-edit-newsletter="${s.id}" title="Edit"><i class="fa-solid fa-pencil"></i></button>
-                <button type="button" class="del" data-del-newsletter="${s.id}" title="Delete"><i class="fa-solid fa-trash"></i></button>
-            </div></td>
-        </tr>`).join('') || '<tr><td colspan="4">No subscribers yet. Add your first subscriber.</td></tr>';
-
-    document.querySelectorAll('[data-edit-newsletter]').forEach(b => b.onclick = () => {
-        openNewsletterModal(parseInt(b.dataset.editNewsletter, 10), newsletterData);
-    });
-    document.querySelectorAll('[data-unsub-newsletter]').forEach(b => b.onclick = async () => {
-        if (!await UI.confirm('Unsubscribe', 'Mark this subscriber as unsubscribed?')) return;
-        await UI.withLoading(() => AdminAPI.unsubscribe(b.dataset.unsubNewsletter));
-        acDel('newsletter');
-        UI.toast('Subscriber unsubscribed');
-        renderNewsletter({ fresh: true });
-    });
-    document.querySelectorAll('[data-del-newsletter]').forEach(b => b.onclick = async () => {
-        if (!await UI.confirm('Delete Subscriber', 'Remove this email from the newsletter list permanently?')) return;
-        await UI.withLoading(() => AdminAPI.deleteNewsletterSubscriber(b.dataset.delNewsletter));
-        acDel('newsletter');
-        UI.toast('Subscriber deleted');
-        renderNewsletter({ fresh: true });
-    });
-}
-
-function openNewsletterModal(id = null, items = []) {
-    const s = id != null ? items.find(x => x.id === id) : null;
-    document.getElementById('generic-modal-title').textContent = s ? 'Edit Subscriber' : 'Add Subscriber';
-    document.getElementById('generic-modal-body').innerHTML = `
-        <div class="form-grid">
-            <div class="form-field form-field--full">
-                <label for="m-news-email">Email address *</label>
-                <input type="email" class="adm-input" id="m-news-email" placeholder="customer@example.com" value="${UI.esc(s?.email || '')}" autocomplete="off">
-            </div>
-            <div class="form-field">
-                <label>Active subscription</label>
-                <label class="toggle"><input type="checkbox" id="m-news-active" ${s?.isActive !== false ? 'checked' : ''}><span class="toggle-slider"></span></label>
-                <p class="form-hint">Inactive subscribers will not receive mailings.</p>
-            </div>
-        </div>`;
-    document.getElementById('generic-modal').classList.remove('hidden');
-    document.getElementById('generic-modal-save').style.display = '';
-    document.getElementById('m-news-email')?.focus();
-    document.getElementById('generic-modal-save').onclick = async () => {
-        const email = document.getElementById('m-news-email').value.trim();
-        const is_active = document.getElementById('m-news-active').checked;
-        if (!email) { UI.toast('Email is required', 'error'); return; }
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-            UI.toast('Enter a valid email address', 'error');
-            return;
-        }
-        try {
-            if (s) {
-                await UI.withLoading(() => AdminAPI.updateNewsletterSubscriber(s.id, { email, is_active }));
-                UI.toast('Subscriber updated');
-            } else {
-                await UI.withLoading(() => AdminAPI.createNewsletterSubscriber({ email, is_active }));
-                UI.toast('Subscriber added');
-            }
-            document.getElementById('generic-modal').classList.add('hidden');
-            acDel('newsletter');
-            renderNewsletter({ fresh: true });
-        } catch (err) {
-            UI.toast(err.message || 'Could not save subscriber', 'error');
-        }
-    };
 }
 
 /* ── Coupons ────────────────────────────────────────────── */
@@ -2671,7 +2716,10 @@ async function renderCoupons({ fresh = false } = {}) {
     const cached = !fresh ? acGet('coupons') : null;
     if (cached) {
         paintCoupons(cached);
-        if (!fresh) return;
+        acRevalidate('coupons', () => AdminAPI.coupons(), paintCoupons, {
+            isStale: () => state.section !== 'coupons',
+        });
+        return;
     }
     if (tbody && !tbody.querySelector('tr')) {
         tbody.innerHTML = `<tr><td colspan="6" class="adm-table-loading">${sectionSpinner()}</td></tr>`;
@@ -2737,7 +2785,7 @@ function openCouponModal(coupon = null, index = -1) {
         if (index >= 0) next[index] = item;
         else next.push(item);
         await UI.withLoading(() => AdminAPI.saveCoupons(next));
-        document.getElementById('generic-modal').classList.add('hidden');
+        closeGenericModal();
         acDel('coupons');
         UI.toast('Coupon saved');
         renderCoupons({ fresh: true });
@@ -2757,9 +2805,9 @@ const SETTINGS_GROUPS = [
     {
         id: 'contact', title: 'Contact & Location', icon: 'fa-solid fa-location-dot',
         fields: [
-            { key: 'store_phone',      label: 'Phone',                    placeholder: '01895 476737' },
-            { key: 'whatsapp_number',  label: 'WhatsApp (digits only)',    placeholder: '441895476737', hint: 'Country code + number, no spaces or +' },
-            { key: 'contact_email',    label: 'Contact email',             placeholder: 'info@example.com', full: true },
+            { key: 'store_phone',      label: 'Phone',                    placeholder: '+44 7802617847' },
+            { key: 'whatsapp_number',  label: 'WhatsApp (digits only)',    placeholder: '447802617847', hint: 'UK country code + number, no spaces or + (e.g. 447802617847)' },
+            { key: 'contact_email',    label: 'Contact email',             placeholder: 'gmsworldfood@gmail.com', full: true },
             { key: 'store_address',    label: 'Street address',            placeholder: '88–90 High Street', full: true },
             { key: 'store_city',       label: 'City',                      placeholder: 'West Drayton' },
             { key: 'store_postcode',   label: 'Postcode',                  placeholder: 'UB7 7DS' },
@@ -2809,7 +2857,23 @@ const SETTINGS_FIELDS = SETTINGS_GROUPS.flatMap(g => g.fields);
 async function renderSettings({ fresh = false } = {}) {
     const container = document.getElementById('settings-form');
     if (!container) return;
+
+    const cached = !fresh ? acGet('settings') : null;
+    if (cached) {
+        paintSettingsForm(cached);
+        acRevalidate('settings', () => AdminAPI.settings(), paintSettingsForm, {
+            isStale: () => state.section !== 'settings',
+        });
+        return;
+    }
+
     const data = await acFetch('settings', () => AdminAPI.settings(), { fresh });
+    paintSettingsForm(data);
+}
+
+function paintSettingsForm(data) {
+    const container = document.getElementById('settings-form');
+    if (!container || !data) return;
 
     container.innerHTML = SETTINGS_GROUPS.map(group => {
         const fieldsHtml = group.fields.map(f => {
@@ -2861,7 +2925,48 @@ async function saveSettingsForm() {
 }
 
 /* ── Discounts ──────────────────────────────────────────── */
-async function renderDiscounts() {
+function updateDiscountBulkBar() {
+    const bar = document.getElementById('discount-bulk-bar');
+    const n = state.discountedSelected.size;
+    if (!bar) return;
+    if (n) {
+        bar.classList.remove('hidden');
+        document.getElementById('discount-bulk-count').textContent = `${n} selected`;
+    } else {
+        bar.classList.add('hidden');
+    }
+}
+
+function syncDiscountSelectAll() {
+    const selectAll = document.getElementById('discounted-select-all');
+    const cbs = document.querySelectorAll('.disc-cb');
+    if (!selectAll) return;
+    selectAll.checked = cbs.length > 0 && [...cbs].every(cb => state.discountedSelected.has(cb.value));
+    selectAll.indeterminate = !selectAll.checked && [...cbs].some(cb => state.discountedSelected.has(cb.value));
+}
+
+function bindDiscountTableEvents() {
+    document.querySelectorAll('.disc-cb').forEach(cb => {
+        cb.onchange = () => {
+            if (cb.checked) state.discountedSelected.add(cb.value);
+            else state.discountedSelected.delete(cb.value);
+            updateDiscountBulkBar();
+            syncDiscountSelectAll();
+        };
+    });
+
+    document.querySelectorAll('[data-rm-disc]').forEach(b => {
+        b.onclick = async () => {
+            await UI.withLoading(() => AdminAPI.bulkClearDiscounts({ product_ids: [b.dataset.rmDisc] }));
+            state.discountedSelected.delete(b.dataset.rmDisc);
+            acDel('discountedProducts', 'spotlight'); acClearProducts();
+            UI.toast('Discount removed');
+            renderDiscounts();
+        };
+    });
+}
+
+async function renderDiscounts({ fresh = false } = {}) {
     await loadCategoriesCache();
     const catSel = document.getElementById('discount-cat');
     if (catSel.options.length <= 1) {
@@ -2872,27 +2977,49 @@ async function renderDiscounts() {
             catSel.appendChild(o);
         });
         catSel.onchange = async () => {
-            const subs = await AdminAPI.subcategories(catSel.value);
+            const subs = await acFetch(
+                `subcategories:${catSel.value || 'all'}`,
+                () => AdminAPI.subcategories(catSel.value),
+            );
             document.getElementById('discount-subcat').innerHTML =
                 '<option value="">All in category</option>' +
                 subs.map(s => `<option value="${s.subcategory_id}">${UI.esc(s.subcategory_name)}</option>`).join('');
         };
     }
-    const items = acGet('discountedProducts') || await acFetch('discountedProducts', () => AdminAPI.discountedProducts());
+
+    const cached = !fresh ? acGet('discountedProducts') : null;
+    if (cached) {
+        paintDiscountedProducts(cached);
+        acRevalidate('discountedProducts', () => AdminAPI.discountedProducts(), paintDiscountedProducts, {
+            isStale: () => state.section !== 'discounts',
+        });
+        return;
+    }
+
+    const items = await acFetch('discountedProducts', () => AdminAPI.discountedProducts(), { fresh });
+    paintDiscountedProducts(items);
+}
+
+function paintDiscountedProducts(items) {
+    const visibleIds = new Set(items.map(p => p.productId));
+    state.discountedSelected.forEach(id => {
+        if (!visibleIds.has(id)) state.discountedSelected.delete(id);
+    });
     document.querySelector('#discounted-table tbody').innerHTML = items.map(p => `
         <tr>
+            <td><input type="checkbox" class="disc-cb" value="${UI.esc(p.productId)}" ${state.discountedSelected.has(p.productId) ? 'checked' : ''}></td>
             <td>${UI.esc(p.productName)}</td>
             <td>${UI.esc(p.categoryName)}</td>
+            <td>${UI.esc(p.subCategoryName || '—')}</td>
             <td><span class="badge badge--pink">-${p.discountPercent}%</span></td>
-            <td><button type="button" data-rm-disc="${p.productId}">Remove</button></td>
-        </tr>`).join('') || '<tr><td colspan="4">No discounted products</td></tr>';
+            <td><div class="adm-table-actions">
+                <button type="button" class="del" data-rm-disc="${p.productId}" title="Remove discount"><i class="fa-solid fa-trash"></i></button>
+            </div></td>
+        </tr>`).join('') || '<tr><td colspan="6">No discounted products</td></tr>';
 
-    document.querySelectorAll('[data-rm-disc]').forEach(b => b.onclick = async () => {
-        await UI.withLoading(() => AdminAPI.updateProduct(b.dataset.rmDisc, { discount_percent: 0, compare_price: null, is_hot_offer: false }));
-        acDel('discountedProducts', 'spotlight'); acClearProducts();
-        UI.toast('Discount removed');
-        renderDiscounts();
-    });
+    bindDiscountTableEvents();
+    updateDiscountBulkBar();
+    syncDiscountSelectAll();
 }
 
 /* ── CSV helper ─────────────────────────────────────────── */
@@ -2906,19 +3033,7 @@ function downloadCsv(rows, filename) {
 
 /* ── Init ───────────────────────────────────────────────── */
 function bindEvents() {
-    document.getElementById('login-form').addEventListener('submit', handleLogin);
-    document.getElementById('toggle-pass').onclick = () => {
-        const inp = document.getElementById('login-password');
-        inp.type = inp.type === 'password' ? 'text' : 'password';
-    };
-    document.getElementById('forgot-password').onclick = (e) => {
-        e.preventDefault();
-        UI.toast('Contact admin to reset password via credentials provider');
-    };
-    document.getElementById('logout-btn').onclick = async () => {
-        await AdminAPI.logout();
-        exitToLogin();
-    };
+    document.getElementById('logout-btn').onclick = () => exitToStorefront();
 
     document.querySelectorAll('.adm-nav-link[data-section]').forEach(a => {
         a.onclick = (e) => { e.preventDefault(); showSection(a.dataset.section); };
@@ -2941,27 +3056,24 @@ function bindEvents() {
             if (q === 'product') { showSection('products'); openProductPanel(); }
             else if (q === 'discount') showSection('discounts');
             else if (q === 'banner') { showSection('banners'); openBannerModal().catch(console.error); }
-            else if (q === 'newsletter') showSection('newsletter');
         };
     });
 
     document.getElementById('add-product-btn').onclick = () => openProductPanel();
     document.getElementById('save-product-btn').onclick = saveProduct;
     document.querySelectorAll('.product-panel-close').forEach(b => b.onclick = closeProductModal);
-    document.getElementById('product-modal')?.addEventListener('click', (e) => {
-        if (e.target.id === 'product-modal') closeProductModal();
-    });
-    document.querySelectorAll('.generic-modal-close').forEach(b => b.onclick = () => {
-        document.getElementById('generic-modal').classList.add('hidden');
-        document.getElementById('generic-modal-save').style.display = '';
-    });
+    document.querySelectorAll('.generic-modal-close').forEach(b => b.onclick = closeGenericModal);
 
     document.getElementById('products-search').oninput = debounce(() => {
         state.products.page = 1;
-        renderProducts({ fresh: true });
+        renderProducts();
     }, 450);
     document.getElementById('products-cat-filter').onchange = async () => {
-        const subs = await AdminAPI.subcategories(document.getElementById('products-cat-filter').value);
+        const categoryId = document.getElementById('products-cat-filter').value;
+        const subs = await acFetch(
+            `subcategories:${categoryId || 'all'}`,
+            () => AdminAPI.subcategories(categoryId),
+        );
         document.getElementById('products-subcat-filter').innerHTML =
             '<option value="">All</option>' + subs.map(s => `<option value="${s.subcategory_id}">${UI.esc(s.subcategory_name)}</option>`).join('');
         state.products.page = 1;
@@ -2969,8 +3081,8 @@ function bindEvents() {
     };
     document.getElementById('products-subcat-filter').onchange = () => { state.products.page = 1; renderProducts(); };
     document.getElementById('products-stock-filter').onchange = () => { state.products.page = 1; renderProducts(); };
-    document.getElementById('products-active-filter').onchange = () => { state.products.page = 1; renderProducts({ fresh: true }); };
-    document.getElementById('products-sort-filter').onchange = () => { state.products.page = 1; renderProducts({ fresh: true }); };
+    document.getElementById('products-active-filter').onchange = () => { state.products.page = 1; renderProducts(); };
+    document.getElementById('products-sort-filter').onchange = () => { state.products.page = 1; renderProducts(); };
     document.getElementById('products-reset-filters').onclick = () => {
         ['products-search','products-cat-filter','products-subcat-filter','products-stock-filter','products-active-filter'].forEach(id => {
             const el = document.getElementById(id);
@@ -2978,7 +3090,7 @@ function bindEvents() {
         });
         document.getElementById('products-sort-filter').value = 'none';
         state.products.page = 1;
-        renderProducts({ fresh: true });
+        renderProducts();
     };
     document.getElementById('products-select-all').onchange = (e) => {
         document.querySelectorAll('.prod-cb').forEach(cb => {
@@ -3016,10 +3128,6 @@ function bindEvents() {
     document.getElementById('add-banner-btn').onclick = () => openBannerModal().catch(console.error);
     document.getElementById('add-culture-btn').onclick = () => openCultureModal().catch(console.error);
     document.getElementById('add-testimonial-btn').onclick = () => openTestimonialModal();
-    document.getElementById('export-newsletter-btn').onclick = () => {
-        downloadCsv([['Email','Subscribed','Active'], ...newsletterData.map(s => [s.email, s.subscribedAt, s.isActive])], 'newsletter.csv');
-    };
-    document.getElementById('add-newsletter-btn').onclick = () => openNewsletterModal();
     document.getElementById('add-coupon-btn').onclick = () => openCouponModal();
     document.getElementById('save-settings-btn').onclick = () => saveSettingsForm().catch(console.error);
     document.getElementById('notif-btn').onclick = () => {
@@ -3047,8 +3155,31 @@ function bindEvents() {
     document.getElementById('clear-discounts-btn').onclick = async () => {
         if (!await UI.confirm('Clear All Discounts', 'Remove all sale pricing and restore original prices from compare price?')) return;
         const res = await UI.withLoading(() => AdminAPI.clearDiscounts());
+        state.discountedSelected.clear();
         acDel('discountedProducts', 'spotlight'); acClearProducts();
         UI.toast(`Cleared discounts on ${res.affected} products`);
+        renderDiscounts();
+    };
+    document.getElementById('discounted-select-all').onchange = (e) => {
+        document.querySelectorAll('.disc-cb').forEach(cb => {
+            cb.checked = e.target.checked;
+            if (e.target.checked) state.discountedSelected.add(cb.value);
+            else state.discountedSelected.delete(cb.value);
+        });
+        updateDiscountBulkBar();
+        syncDiscountSelectAll();
+    };
+    document.getElementById('discount-bulk-remove').onclick = async () => {
+        const ids = [...state.discountedSelected];
+        if (!ids.length) return;
+        if (!await UI.confirm(
+            'Remove Selected Discounts',
+            `Remove discounts from ${ids.length} selected product${ids.length === 1 ? '' : 's'} and restore original prices?`,
+        )) return;
+        const res = await UI.withLoading(() => AdminAPI.bulkClearDiscounts({ product_ids: ids }));
+        state.discountedSelected.clear();
+        acDel('discountedProducts', 'spotlight'); acClearProducts();
+        UI.toast(`Removed discounts from ${res.affected} product${res.affected === 1 ? '' : 's'}`);
         renderDiscounts();
     };
 
@@ -3075,7 +3206,7 @@ function bindEvents() {
         document.getElementById('products-search').value = term;
         document.getElementById('global-search').value = term;
         state.products.page = 1;
-        renderProducts({ fresh: true });
+        renderProducts();
     }, 450);
 
     document.getElementById('global-search').oninput = (e) => runGlobalProductSearch(e.target.value.trim());
@@ -3086,32 +3217,6 @@ function bindEvents() {
         }
     };
 
-    const closeGeneric = () => {
-        document.getElementById('generic-modal').classList.add('hidden');
-        document.getElementById('generic-modal-save').style.display = '';
-    };
-    document.getElementById('generic-modal')?.addEventListener('click', (e) => {
-        if (e.target.id === 'generic-modal') closeGeneric();
-    });
-    document.getElementById('confirm-modal')?.addEventListener('click', (e) => {
-        if (e.target.id === 'confirm-modal') {
-            document.getElementById('confirm-modal').classList.add('hidden');
-        }
-    });
-    document.addEventListener('keydown', (e) => {
-        if (e.key !== 'Escape') return;
-        if (!document.getElementById('product-modal')?.classList.contains('hidden')) {
-            closeProductModal();
-            return;
-        }
-        if (!document.getElementById('generic-modal')?.classList.contains('hidden')) {
-            closeGeneric();
-            return;
-        }
-        if (!document.getElementById('confirm-modal')?.classList.contains('hidden')) {
-            document.getElementById('confirm-modal').classList.add('hidden');
-        }
-    });
 }
 
 function debounce(fn, ms) {
@@ -3129,13 +3234,5 @@ function debounce(fn, ms) {
 
 document.addEventListener('DOMContentLoaded', () => {
     bindEvents();
-    fetch('/api/v1/catalog/bootstrap')
-        .then(r => r.json())
-        .then(data => {
-            if (data.siteSettings && typeof applySiteSettings === 'function') {
-                applySiteSettings(data.siteSettings);
-            }
-        })
-        .catch(() => {});
     initAuth();
 });

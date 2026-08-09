@@ -3,7 +3,7 @@
    State is owned by GmsShoppingStore (shopping-store.js).
    ============================================================ */
 
-const GMS_WHATSAPP_NUMBER = '441895476737';
+const GMS_WHATSAPP_NUMBER = '447802617847';
 const BASKET_COUPON_KEY = 'gms_applied_coupon_v1';
 
 let activeCouponsMap = {};
@@ -38,11 +38,6 @@ function getCartCount() {
     return typeof GmsShoppingStore !== 'undefined'
         ? GmsShoppingStore.getCartCount()
         : 0;
-}
-
-function normalizeCartInStorage() {
-    if (typeof GmsShoppingStore !== 'undefined') GmsShoppingStore.hydrate(true);
-    return getCartMap();
 }
 
 function addToCart(productName, quantity) {
@@ -124,8 +119,45 @@ function showToast(message, type) {
 
 function getRecommendations(excludeNames, count) {
     if (typeof ALL_PRODUCTS === 'undefined') return [];
+
     const exclude = new Set(excludeNames);
-    return ALL_PRODUCTS.filter(p => !exclude.has(p.productName)).slice(0, count || 6);
+    const available = ALL_PRODUCTS.filter(p => !exclude.has(p.productName));
+    if (!available.length) return [];
+
+    const limit = count || 16;
+
+    // ── Gather the categories + subcategories in the basket ────────────────
+    const lines = getCartLineItems();
+    const basketCategories    = new Set(lines.map(l => l.product.categoryName).filter(Boolean));
+    const basketSubCategories = new Set(lines.map(l => l.product.subCategoryName).filter(Boolean));
+
+    // ── Score each candidate product by relevance ──────────────────────────
+    //   2 pts  — same subcategory as something in basket
+    //   1 pt   — same category as something in basket
+    //   0 pts  — unrelated
+    const scored = available.map(p => {
+        let score = 0;
+        if (p.subCategoryName && basketSubCategories.has(p.subCategoryName)) score = 2;
+        else if (p.categoryName && basketCategories.has(p.categoryName))     score = 1;
+        return { p, score };
+    });
+
+    // ── Shuffle within each score tier so results vary each visit ──────────
+    function shuffleTier(arr) {
+        for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+    }
+
+    const tier2 = shuffleTier(scored.filter(s => s.score === 2).map(s => s.p));
+    const tier1 = shuffleTier(scored.filter(s => s.score === 1).map(s => s.p));
+    const tier0 = shuffleTier(scored.filter(s => s.score === 0).map(s => s.p));
+
+    // ── Fill up to `limit`: same-subcategory first, then same-category, then rest
+    const results = [...tier2, ...tier1, ...tier0];
+    return results.slice(0, limit);
 }
 
 async function loadActiveCoupons() {
@@ -168,6 +200,28 @@ function resolveAppliedCoupon() {
     return { code, ...coupon };
 }
 
+function getBasketSubtotal(lines) {
+    return (lines || []).reduce((sum, line) => {
+        const price = Number(line.product?.sellingPrice) || 0;
+        return sum + price * Math.max(1, line.quantity || 1);
+    }, 0);
+}
+
+function couponMinimumOrder(coupon) {
+    return Number(coupon?.minOrder ?? coupon?.min ?? 0) || 0;
+}
+
+function couponMeetsMinimum(coupon, lines) {
+    const min = couponMinimumOrder(coupon);
+    if (min <= 0) return true;
+    return getBasketSubtotal(lines) >= min;
+}
+
+function formatCouponMinimumError(coupon) {
+    const min = couponMinimumOrder(coupon);
+    return `Minimum order of £${min.toFixed(2)} required for this coupon.`;
+}
+
 function syncStoredCouponWithApi() {
     const code = getStoredCouponCode();
     if (code && !activeCouponsMap[code]) {
@@ -188,6 +242,24 @@ function buildCouponAppliedLine(coupon) {
     return `Promo coupon applied: ${coupon.code} (${formatCouponDiscountLabel(coupon)} on my order)`;
 }
 
+function getOrderCustomerDetails() {
+    if (typeof CustomerAPI === 'undefined') return null;
+    const token = CustomerAPI.getToken();
+    const user  = CustomerAPI.getUser();
+    if (!token || !user) return null;
+    return user;
+}
+
+function buildCustomerDetailsBlock(user) {
+    const parts = [];
+    if (user.name)     parts.push(`Name: ${user.name}`);
+    if (user.username) parts.push(`Username: ${user.username}`);
+    if (user.email)    parts.push(`Email: ${user.email}`);
+    if (user.phone)    parts.push(`Phone: ${user.phone}`);
+    if (user.address)  parts.push(`Address: ${user.address}`);
+    return parts.join('\n');
+}
+
 function buildOrderMessageText(lines, coupon) {
     const totalUnits = lines.reduce((sum, l) => sum + l.quantity, 0);
     const itemWord = totalUnits === 1 ? 'item' : 'items';
@@ -197,13 +269,22 @@ function buildOrderMessageText(lines, coupon) {
     if (coupon) {
         message += `${buildCouponAppliedLine(coupon)}\n\n`;
     }
-    message += 'Could you please confirm whether these items are currently available?\n\nThank you. I look forward to your response.';
+    message += 'Could you please confirm whether these items are currently available?';
+
+    const user = getOrderCustomerDetails();
+    if (user) {
+        message += `\n\nCustomer Details\n${buildCustomerDetailsBlock(user)}`;
+    }
+
+    const displayName = user ? (user.name || user.username || '').trim() : '';
+    message += `\n\nThank you. I look forward to your response.\n\nKind regards, ${displayName || 'a customer'}`;
     return message;
 }
 
 function buildOrderMessagePreviewHTML(lines, coupon) {
     const text = buildOrderMessageText(lines, coupon);
     let html = escStr(text);
+
     if (coupon) {
         const couponLine = buildCouponAppliedLine(coupon);
         const escapedLine = escStr(couponLine);
@@ -212,6 +293,16 @@ function buildOrderMessagePreviewHTML(lines, coupon) {
             `<strong class="order-message-preview-coupon">${escapedLine}</strong>`
         );
     }
+
+    const user = getOrderCustomerDetails();
+    if (user) {
+        const detailsBlock = escStr(`Customer Details\n${buildCustomerDetailsBlock(user)}`);
+        html = html.replace(
+            detailsBlock,
+            `<strong class="order-message-preview-customer">${detailsBlock}</strong>`
+        );
+    }
+
     return html;
 }
 
@@ -410,13 +501,57 @@ function showConfirmDialog({ title, message, confirmLabel = 'Confirm', cancelLab
     });
 }
 
+function renderBasketRecommendations(container) {
+    if (!container || typeof ALL_PRODUCTS === 'undefined' || !ALL_PRODUCTS.length) return;
+
+    const lines = getCartLineItems();
+    const exclude = lines.map(l => l.product.productName);
+    const recommendations = getRecommendations(exclude, 16);
+    if (!recommendations.length) {
+        container.remove();
+        return;
+    }
+
+    // Build a heading that reflects the basket context
+    const basketCategories = [...new Set(lines.map(l => l.product.categoryName).filter(Boolean))];
+    const headingText = basketCategories.length === 1
+        ? `More from ${basketCategories[0]}`
+        : 'You may also like…';
+
+    container.innerHTML = `
+        <section class="cart-recommendations" aria-label="${headingText}">
+            <div class="cart-recommendations-header">
+                <h2>${headingText}</h2>
+            </div>
+            <div class="fp-grid fp-grid--basket-strip" id="cart-recommendations">
+                ${recommendations.map((p, i) => buildProductCardHTML(p, i, 0)).join('')}
+            </div>
+        </section>
+    `;
+
+    const recGrid = container.querySelector('#cart-recommendations');
+    if (recGrid && typeof bindProductCards === 'function') {
+        bindProductCards(recGrid);
+        if (typeof initFpGridAutoScroll === 'function') {
+            initFpGridAutoScroll(recGrid, { minCards: 6, intervalMs: 2000 });
+        }
+    }
+}
+
 function renderBasketPage(couponError) {
     const root = document.getElementById('basket-page-root');
     if (!root) return;
 
     syncStoredCouponWithApi();
-    const appliedCoupon = resolveAppliedCoupon();
     const lines = getCartLineItems();
+    let appliedCoupon = resolveAppliedCoupon();
+    let effectiveError = couponError;
+
+    if (appliedCoupon && !couponMeetsMinimum(appliedCoupon, lines)) {
+        setStoredCouponCode('');
+        effectiveError = effectiveError || formatCouponMinimumError(appliedCoupon);
+        appliedCoupon = null;
+    }
 
     if (lines.length === 0) {
         root.innerHTML = `
@@ -433,7 +568,6 @@ function renderBasketPage(couponError) {
     }
 
     const exclude         = lines.map(l => l.product.productName);
-    const recommendations = getRecommendations(exclude, 16);
     const lineCount       = lines.length;
 
     root.innerHTML = `
@@ -454,32 +588,18 @@ function renderBasketPage(couponError) {
                 <div class="cart-lines" id="cart-lines">
                     ${lines.map(buildBasketLineHTML).join('')}
                 </div>
-                ${recommendations.length ? `
-                    <section class="cart-recommendations" aria-label="You may also like">
-                        <div class="cart-recommendations-header">
-                            <h2>You may also like…</h2>
-                        </div>
-                        <div class="fp-grid fp-grid--basket-strip" id="cart-recommendations">
-                            ${recommendations.map((p, i) => buildProductCardHTML(p, i, 0)).join('')}
-                        </div>
-                    </section>
-                ` : ''}
+                <div id="cart-recommendations-slot"></div>
             </div>
-            ${buildBasketSummaryHTML(lines, appliedCoupon, couponError)}
+            ${buildBasketSummaryHTML(lines, appliedCoupon, effectiveError)}
         </div>
     `;
 
     bindBasketLineEvents(root);
     bindBasketSummaryEvents(root, lines);
 
-    if (typeof bindProductCards === 'function') {
-        const recGrid = root.querySelector('#cart-recommendations');
-        if (recGrid) {
-            bindProductCards(recGrid);
-            if (typeof initFpGridAutoScroll === 'function') {
-                initFpGridAutoScroll(recGrid, { minCards: 6, intervalMs: 2000 });
-            }
-        }
+    const recSlot = root.querySelector('#cart-recommendations-slot');
+    if (typeof ALL_PRODUCTS !== 'undefined' && ALL_PRODUCTS.length) {
+        renderBasketRecommendations(recSlot);
     }
 }
 
@@ -524,21 +644,44 @@ function bindBasketSummaryEvents(container, lines) {
 
     container.querySelector('#coupon-apply-btn')?.addEventListener('click', async () => {
         const input = container.querySelector('#coupon-code-input');
+        const applyBtn = container.querySelector('#coupon-apply-btn');
         const code = (input?.value || '').trim().toUpperCase();
         if (!code) {
             renderBasketPage('Please enter a coupon code.');
             return;
         }
-        await loadActiveCoupons();
-        const coupon = activeCouponsMap[code];
-        if (!coupon) {
-            setStoredCouponCode('');
-            renderBasketPage('Invalid or expired coupon code.');
-            return;
+        const originalLabel = applyBtn ? applyBtn.innerHTML : 'Apply';
+        if (applyBtn) {
+            applyBtn.disabled = true;
+            applyBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>';
         }
-        setStoredCouponCode(code);
-        showToast(`${code} applied — ${formatCouponDiscountLabel({ ...coupon, code })}`, 'basket');
-        renderBasketPage();
+        try {
+            await loadActiveCoupons();
+            const coupon = activeCouponsMap[code];
+            if (!coupon) {
+                setStoredCouponCode('');
+                renderBasketPage('Invalid or expired coupon code.');
+                return;
+            }
+            const lines = getCartLineItems();
+            if (!couponMeetsMinimum(coupon, lines)) {
+                setStoredCouponCode('');
+                renderBasketPage(formatCouponMinimumError(coupon));
+                return;
+            }
+            setStoredCouponCode(code);
+            showToast(`${code} applied — ${formatCouponDiscountLabel({ ...coupon, code })}`, 'basket');
+            renderBasketPage();
+        } catch (_) {
+            renderBasketPage('Could not verify coupon. Please try again.');
+        } finally {
+            // renderBasketPage rebuilds DOM; only restore if button still exists
+            const btn = document.querySelector('#coupon-apply-btn');
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = originalLabel || 'Apply';
+            }
+        }
     });
 
     container.querySelector('#coupon-code-input')?.addEventListener('keydown', (e) => {
@@ -587,23 +730,119 @@ function bindBasketLineEvents(container) {
     });
 }
 
-async function initBasketPage() {
-    if (typeof ALL_PRODUCTS === 'undefined' || !ALL_PRODUCTS.length) {
-        showPageLoadError('basket-page-root');
-        return;
-    }
+function renderBasketPageEarly() {
     if (typeof GmsShoppingStore !== 'undefined') GmsShoppingStore.hydrate(true);
-    await loadActiveCoupons();
-    syncStoredCouponWithApi();
-    renderBasketPage();
-    document.removeEventListener('gms:basket-updated', onBasketUpdated);
-    document.addEventListener('gms:basket-updated', onBasketUpdated);
+    const cartNames = Object.keys(getCartMap());
+    // Only paint empty state early when we are sure the cart has no names.
+    // If names exist but products are not loaded yet, keep the loading UI.
+    if (!cartNames.length) renderBasketPage();
 }
 
+async function ensureBasketProductsLoaded() {
+    const cartNames = Object.keys(getCartMap());
+    if (!cartNames.length) return true;
+
+    let unresolved = cartNames.filter(name =>
+        typeof resolveStoredProductKey === 'function'
+            ? !resolveStoredProductKey(name)
+            : true
+    );
+    if (!unresolved.length) return true;
+
+    if (typeof fetchCartProducts === 'function') {
+        try {
+            const products = await fetchCartProducts(unresolved);
+            if (typeof mergeProductsIntoCatalog === 'function') {
+                mergeProductsIntoCatalog(products);
+            }
+            unresolved = unresolved.filter(name =>
+                typeof resolveStoredProductKey === 'function'
+                    ? !resolveStoredProductKey(name)
+                    : true
+            );
+            if (!unresolved.length) return true;
+        } catch (_) {
+            /* cart-products endpoint may be unavailable until server restart */
+        }
+    }
+
+    if (typeof whenCatalogReady === 'function') {
+        try {
+            await whenCatalogReady();
+        } catch (_) {}
+    }
+
+    return cartNames.every(name =>
+        typeof resolveStoredProductKey === 'function' ? !!resolveStoredProductKey(name) : false
+    );
+}
+
+async function paintBasketPage(couponError) {
+    const cartNames = Object.keys(getCartMap());
+    if (cartNames.length) {
+        const ready = await ensureBasketProductsLoaded();
+        if (!ready) {
+            // Cart has items but catalog rows missing — don't pretend basket is empty
+            const lines = getCartLineItems();
+            if (!lines.length) {
+                showPageLoadError('basket-page-root');
+                return;
+            }
+        }
+    }
+    await loadActiveCoupons();
+    syncStoredCouponWithApi();
+    renderBasketPage(couponError);
+    if (typeof ALL_PRODUCTS !== 'undefined' && ALL_PRODUCTS.length > 1) {
+        onBasketCatalogReady();
+    } else if (typeof whenCatalogReady === 'function') {
+        whenCatalogReady().then(() => onBasketCatalogReady()).catch(() => {});
+    }
+}
+
+async function initBasketPage() {
+    if (typeof GmsShoppingStore !== 'undefined') GmsShoppingStore.hydrate(true);
+
+    // Wait for account cart pull so phone/desktop share the same server basket
+    if (
+        typeof GmsShoppingStore !== 'undefined'
+        && typeof CustomerAPI !== 'undefined'
+        && CustomerAPI.getToken()
+        && typeof GmsShoppingStore.syncFromServer === 'function'
+    ) {
+        try {
+            await GmsShoppingStore.syncFromServer();
+        } catch (_) {}
+    }
+
+    document.removeEventListener('gms:basket-updated', onBasketUpdated);
+    document.addEventListener('gms:basket-updated', onBasketUpdated);
+
+    try {
+        await paintBasketPage();
+    } catch (_) {
+        showPageLoadError('basket-page-root');
+    }
+}
+
+function onBasketCatalogReady() {
+    const root = document.getElementById('basket-page-root');
+    if (!root) return;
+
+    const recSlot = root.querySelector('#cart-recommendations-slot');
+    if (recSlot) {
+        renderBasketRecommendations(recSlot);
+    }
+}
+
+let _basketUpdateSeq = 0;
 function onBasketUpdated() {
-    loadActiveCoupons().then(() => {
-        syncStoredCouponWithApi();
-        renderBasketPage();
+    const seq = ++_basketUpdateSeq;
+    paintBasketPage().then(() => {
+        if (seq !== _basketUpdateSeq) return;
+    }).catch(() => {
+        if (seq !== _basketUpdateSeq) return;
+        showPageLoadError('basket-page-root');
     });
 }
 
@@ -625,4 +864,9 @@ function showPageLoadError(rootId) {
 function escStr(str) {
     return String(str || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;')
         .replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+if (document.body && (document.body.dataset.page === 'basket' || document.body.dataset.page === 'bucket')) {
+    if (typeof GmsShoppingStore !== 'undefined') GmsShoppingStore.hydrate(true);
+    if (typeof renderBasketPageEarly === 'function') renderBasketPageEarly();
 }

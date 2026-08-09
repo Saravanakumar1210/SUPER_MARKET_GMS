@@ -152,6 +152,7 @@ function refreshModalBasketUI() {
 }
 
 function openProductModal(product) {
+    ensureProductModalShell();
     const overlay = document.getElementById('product-modal-overlay');
     const modal   = document.getElementById('product-modal');
     if (!overlay || !modal) return;
@@ -329,7 +330,20 @@ function trapFocus(modal) {
     document.addEventListener('keydown', onModalKeydown);
 }
 
+function ensureProductModalShell() {
+    if (document.getElementById('product-modal-overlay')) return;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'product-modal-overlay';
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+        <div id="product-modal" class="product-modal" role="dialog" aria-modal="true"></div>
+    `;
+    document.body.appendChild(overlay);
+}
+
 function initModal() {
+    ensureProductModalShell();
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && modalOpen) closeProductModal();
     });

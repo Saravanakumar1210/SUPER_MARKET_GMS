@@ -3,14 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Products — GMS World Foods Ltd</title>
+    <title>Products - GMS World Foods Ltd</title>
     <meta name="description" content="Browse 4,300+ products at GMS World Foods Ltd, West Drayton.">
-    <link rel="icon" href="https://res.cloudinary.com/dgsnwhyah/image/upload/v1782933745/gms-world-foods/company-logo.png" type="image/png">
+    <link rel="icon" href="/assets/favicon-32.png" type="image/png" sizes="32x32">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/main.css?v=89">
 </head>
 <body data-page="products">
 
@@ -22,7 +24,7 @@
                 <a href="contact.html">Contact Us</a>
             </div>
             <div class="topbar-right">
-                <span>Need help? Call Us: <a href="tel:01895476737" class="site-store-phone">01895 476737</a></span>
+                <span>Need help? Call Us: <a href="tel:+447802617847" class="site-store-phone">+44 7802617847</a></span>
             </div>
         </div>
     </div>
@@ -55,10 +57,6 @@
                         <span class="header-action-label">Basket</span>
                         <span class="header-action-badge" id="basket-count">0</span>
                     </a>
-                    <a href="/admin" class="header-action header-action--admin" id="header-admin" title="Admin Portal">
-                        <i class="fa-solid fa-user-shield" aria-hidden="true"></i>
-                        <span class="header-action-label">Admin</span>
-                    </a>
                     <button type="button" id="mobile-menu-toggle" class="mobile-menu-toggle" aria-label="Open menu" aria-expanded="false">
                         <i class="fa-solid fa-bars" aria-hidden="true"></i>
                     </button>
@@ -66,22 +64,31 @@
             </div>
         </header>
 
-        <nav class="sub-nav" aria-label="Shop navigation">
-            <div class="container sub-nav-inner">
-                <div class="sub-nav-item" id="subnav-categories-wrap">
-                    <button type="button" class="sub-nav-categories-btn" id="subnav-categories-btn"
+        <div class="browse-bar">
+            <div class="container browse-bar-inner">
+                <div class="browse-cat-wrap" id="subnav-categories-wrap">
+                    <button type="button" class="browse-cat-btn" id="subnav-categories-btn"
                         aria-expanded="false" aria-controls="subnav-cat-dropdown" aria-haspopup="true">
-                        <i class="fa-solid fa-bars" aria-hidden="true"></i>
-                        Categories
+                        <i class="fa-solid fa-border-all" aria-hidden="true"></i>
+                        Browse All Categories
                         <i class="fa-solid fa-chevron-down sub-nav-chevron" aria-hidden="true"></i>
                     </button>
                     <div class="sub-nav-dropdown" id="subnav-cat-dropdown" role="menu"></div>
                 </div>
-                <a href="products.html" class="sub-nav-link">All Products</a>
-                <a href="about.html" class="sub-nav-link">About</a>
-                <a href="contact.html" class="sub-nav-link">Contact</a>
+                <nav class="browse-nav-links" aria-label="Main navigation">
+                    <a href="products.html" class="browse-nav-link">All Products</a>
+                    <a href="index.html#categories" class="browse-nav-link browse-nav-link--section">Top Categories</a>
+                    <a href="index.html#cultures" class="browse-nav-link browse-nav-link--section">Cultures</a>
+                    <a href="index.html#featured-products" class="browse-nav-link browse-nav-link--section">Featured products</a>
+                    <a href="index.html#best-sellers" class="browse-nav-link browse-nav-link--section">Best Sellers</a>
+                    <a href="index.html#new-arrivals" class="browse-nav-link browse-nav-link--section">New Arrivals</a>
+                    <a href="index.html#hot-offers" class="browse-nav-link browse-nav-link--section">Hot Offers</a>
+                    <a href="index.html#exclusive-products" class="browse-nav-link browse-nav-link--section">Exclusive products</a>
+                    <a href="about.html" class="browse-nav-link">About</a>
+                    <a href="contact.html" class="browse-nav-link">Contact</a>
+                </nav>
             </div>
-        </nav>
+        </div>
     </div>
 
     <div id="drawer-overlay" class="drawer-overlay"></div>
@@ -98,7 +105,7 @@
             <a href="index.html"><i class="fa-solid fa-house"></i> Home</a>
             <a href="products.html"><i class="fa-solid fa-box-open"></i> All Products</a>
             <a href="basket.html"><i class="fa-solid fa-basket-shopping"></i> Basket</a>
-            <a href="https://wa.me/441895476737" class="site-whatsapp-link" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-whatsapp"></i> WhatsApp</a>
+            <a href="https://wa.me/447802617847" class="site-whatsapp-link" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-whatsapp"></i> WhatsApp</a>
             <a href="about.html"><i class="fa-solid fa-circle-info"></i> About</a>
             <a href="contact.html"><i class="fa-solid fa-envelope"></i> Contact</a>
         </nav>
@@ -177,15 +184,15 @@
                         <label class="sort-label" for="sort-select">Sort
                             <select id="sort-select" aria-label="Sort products">
                                 <option value="none">None</option>
-                                <option value="name-asc">Name A–Z</option>
-                                <option value="name-desc">Name Z–A</option>
+                                <option value="name-asc">Name A-Z</option>
+                                <option value="name-desc">Name Z-A</option>
                             </select>
                         </label>
                         <label class="sort-label" for="per-page-select">Show
                             <select id="per-page-select" aria-label="Products per page">
                                 <option value="24">24</option>
                                 <option value="48">48</option>
-                                <option value="96">96</option>
+                                <option value="96" selected>96</option>
                             </select>
                         </label>
                         <div class="view-toggle" role="group" aria-label="View mode">
@@ -230,11 +237,12 @@
                                 <span class="footer-brand-sub site-store-tagline">Wholesale &amp; Retail</span>
                             </div>
                         </div>
-                        <p class="footer-desc site-footer-desc">Your local world foods specialist in West Drayton — stocking quality groceries from across the globe.</p>
+                        <p class="footer-desc site-footer-desc">Your local world foods specialist in West Drayton &ndash; stocking quality groceries from across the globe.</p>
                         <div class="footer-contact-items">
-                            <div class="footer-contact-item"><i class="fa-solid fa-location-dot"></i><span class="site-footer-address">88–90 High Street, West Drayton, UB7 7DS</span></div>
-                            <div class="footer-contact-item"><i class="fa-solid fa-phone"></i><span><a href="tel:01895476737" class="site-store-phone" style="color:inherit">01895 476737</a></span></div>
-                            <div class="footer-contact-item"><i class="fa-regular fa-clock"></i><span class="site-footer-hours">Mon–Sun: 8am – 9pm</span></div>
+                            <div class="footer-contact-item"><i class="fa-solid fa-location-dot"></i><span class="site-footer-address">88&ndash;90 High Street, West Drayton, UB7 7DS</span></div>
+                            <div class="footer-contact-item"><i class="fa-solid fa-phone"></i><span><a href="tel:+447802617847" class="site-store-phone" style="color:inherit">+44 7802617847</a></span></div>
+                            <div class="footer-contact-item"><i class="fa-solid fa-envelope"></i><span><a href="mailto:gmsworldfood@gmail.com" class="site-contact-email" style="color:inherit">gmsworldfood@gmail.com</a></span></div>
+                            <div class="footer-contact-item"><i class="fa-regular fa-clock"></i><span class="site-footer-hours">Mon&ndash;Sun: 8am &ndash; 9pm</span></div>
                         </div>
                         <div id="site-footer-social" class="footer-social hidden"></div>
                     </div>
@@ -282,24 +290,27 @@
     </div>
 
     <!-- WHATSAPP FLOATING BUTTON -->
-    <a href="https://wa.me/441895476737" class="whatsapp-fab site-whatsapp-link" target="_blank" rel="noopener noreferrer" aria-label="Chat on WhatsApp">
+    <a href="https://wa.me/447802617847" class="whatsapp-fab site-whatsapp-link" target="_blank" rel="noopener noreferrer" aria-label="Chat on WhatsApp">
         <i class="fa-brands fa-whatsapp" aria-hidden="true"></i>
     </a>
 
-    <script src="js/site-settings.js?v=1"></script>
-    <script src="js/placeholders.js"></script>
+    <script src="js/site-settings.js?v=7"></script>
+    <script src="js/placeholders.js?v=3"></script>
     <script src="js/product-card.js?v=6"></script>
-    <script src="js/data-loader.js?v=8"></script>
+    <script src="js/data-loader.js?v=11"></script>
     <script src="js/culture-filters-data.js?v=2"></script>
-    <script src="js/filters.js?v=6"></script>
-    <script src="js/product-grid.js"></script>
-    <script src="js/search.js"></script>
-    <script src="js/modal.js"></script>
-    <script src="js/navigation.js"></script>
-    <script src="js/shopping-store.js?v=6"></script>
-    <script src="js/enhancements.js?v=4"></script>
-    <script src="js/basket.js?v=1"></script>
-    <script src="js/main.js?v=2"></script>
+    <script src="js/filters.js?v=7"></script>
+    <script src="js/product-grid.js?v=2"></script>
+    <script src="js/search.js?v=2"></script>
+    <script src="js/modal.js?v=2"></script>
+    <script src="js/navigation.js?v=4"></script>
+    <script src="js/customer-api.js?v=4"></script>
+    <script src="js/shopping-store.js?v=10"></script>
+    <script src="js/enhancements.js?v=5"></script>
+    <script src="js/basket.js?v=14"></script>
+    <script src="js/admin-api.js?v=26"></script>
+    <script src="js/customer-auth.js?v=17"></script>
+    <script src="js/main.js?v=11"></script>
 </body>
 </html>
 

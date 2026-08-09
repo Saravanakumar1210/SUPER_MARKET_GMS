@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.site import ContactSubmission
+from app.core.rate_limit import rate_limit
 
 router = APIRouter(prefix="/api/v1", tags=["contact"])
 
@@ -39,7 +40,10 @@ class ContactFormIn(BaseModel):
         return v
 
 
-@router.post("/contact")
+@router.post(
+    "/contact",
+    dependencies=[Depends(rate_limit(namespace="contact", limit=5, window_seconds=900))],
+)
 async def submit_contact_form(
     body: ContactFormIn,
     db: AsyncSession = Depends(get_db),
@@ -52,5 +56,4 @@ async def submit_contact_form(
         message=body.message,
     )
     db.add(submission)
-    await db.commit()
     return {"ok": True, "message": "Your message has been received. We will be in touch shortly."}

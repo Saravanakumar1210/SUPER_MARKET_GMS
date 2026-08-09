@@ -71,17 +71,20 @@ def upload_bytes(
     folder: str,
     public_id: str,
     ext: str = ".jpg",
+    asset_folder: str | None = None,
 ) -> dict:
     configure_cloudinary()
     payload = _compress_if_needed(data, ext)
     resource_type = "image"
-    return cloudinary.uploader.upload(
-        payload,
-        folder=folder,
-        public_id=public_id,
-        overwrite=True,
-        resource_type=resource_type,
-    )
+    options: dict = {
+        "folder": folder,
+        "public_id": public_id,
+        "overwrite": True,
+        "resource_type": resource_type,
+    }
+    if asset_folder:
+        options["asset_folder"] = asset_folder
+    return cloudinary.uploader.upload(payload, **options)
 
 
 def upload_file_path(path: Path, *, asset_key: str, folder: str) -> dict:
@@ -92,10 +95,18 @@ def upload_file_path(path: Path, *, asset_key: str, folder: str) -> dict:
     subfolder = str(Path(asset_key).parent).replace("\\", "/")
     if subfolder and subfolder != ".":
         full_folder = f"{folder}/{subfolder}"
+        asset_folder = full_folder
     else:
         full_folder = folder
+        asset_folder = folder
     data = path.read_bytes()
-    return upload_bytes(data, folder=full_folder, public_id=public_id, ext=ext)
+    return upload_bytes(
+        data,
+        folder=full_folder,
+        public_id=public_id,
+        ext=ext,
+        asset_folder=asset_folder,
+    )
 
 
 def upload_upload_file(data: bytes, filename: str, *, subfolder: str) -> dict:

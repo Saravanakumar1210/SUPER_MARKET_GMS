@@ -1,7 +1,6 @@
-"""Start the GMS World Foods servers (customer site + admin portal)."""
+"""Start the GMS World Foods site (single server for all users)."""
 
 import argparse
-import multiprocessing
 import socket
 import subprocess
 import sys
@@ -65,6 +64,39 @@ def _stop_ports(ports: list[int]) -> None:
         time.sleep(1.0)
 
 
+def _lan_ipv4() -> str | None:
+    """Best-effort LAN IPv4 for phone/Wi-Fi testing."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            ip = sock.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                return ip
+    except OSError:
+        pass
+    return None
+
+
+def _setup_adb_reverse(port: int) -> bool:
+    """Map phone localhost:port → PC localhost:port over USB (scrcpy/adb)."""
+    candidates = [
+        r"E:\scrcpy-win64-v4.0\adb.exe",
+        "adb",
+    ]
+    for adb in candidates:
+        try:
+            subprocess.run(
+                [adb, "reverse", f"tcp:{port}", f"tcp:{port}"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except (subprocess.SubprocessError, OSError, FileNotFoundError):
+            continue
+    return False
+
+
 def _run_server() -> None:
     settings = get_settings()
     uvicorn.run(
@@ -89,9 +121,7 @@ def _report_port_conflict(label: str, port: int, host: str) -> None:
 
 
 if __name__ == "__main__":
-    multiprocessing.freeze_support()
-
-    parser = argparse.ArgumentParser(description="Start GMS World Foods servers")
+    parser = argparse.ArgumentParser(description="Start GMS World Foods site")
     parser.add_argument(
         "--stop",
         action="store_true",
@@ -101,46 +131,53 @@ if __name__ == "__main__":
 
     settings = get_settings()
     host = settings.app_host
-    site_url = f"http://{host}:{settings.app_port}"
-    ports = [settings.app_port]
+    port = settings.app_port
+    # 0.0.0.0 is bind-all — browsers should use localhost / LAN IP, not 0.0.0.0
+    local_url = f"http://127.0.0.1:{port}"
+    ports = [port]
+    # Port conflict check: probing 0.0.0.0 is unreliable on Windows
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
 
     if args.stop:
-        print("Stopping existing server on port", settings.app_port, "…")
+        print("Stopping existing server on port", port, "…")
         _stop_ports(ports)
 
-    if _port_in_use(host, settings.app_port):
+    if _port_in_use(probe_host, port):
         print("=" * 60)
-        _report_port_conflict("GMS server", settings.app_port, host)
+        _report_port_conflict("GMS server", port, host)
         print("=" * 60)
         sys.exit(1)
 
+    lan_ip = _lan_ipv4()
+    adb_ok = _setup_adb_reverse(port)
+
     print("=" * 60)
-    print("  GMS World Foods — Server Starting")
+    print("  GMS World Foods — Site Starting")
     print("=" * 60)
-    print(f"  Customer site:  {site_url}")
-    print(f"  Admin portal:   {site_url}/admin")
-    print(f"  API docs:       {site_url}/docs")
+    print(f"  Site:           {local_url}")
+    print(f"  API docs:       {local_url}/docs")
+    print(f"  Bind address:   {host}:{port}")
+    if lan_ip:
+        print(f"  Phone (Wi-Fi):  http://{lan_ip}:{port}")
+        print("                  (same Wi-Fi as this PC)")
+    if adb_ok:
+        print(f"  Phone (USB):    {local_url}")
+        print("                  (adb reverse active — open that URL on the phone)")
+    else:
+        print("  Phone (USB):    connect phone + USB debugging, then:")
+        print(f'                  adb reverse tcp:{port} tcp:{port}')
+        print(f"                  then open {local_url} in Chrome on the phone")
     print("=" * 60)
+    print("  Sign in once — customers shop; admins also get Manage store.")
+    print("  Open the URL as soon as you see: Application startup complete")
+    print("  (page HTML loads immediately; product data may follow a second later)")
     print("  Press Ctrl+C to stop")
     print("=" * 60)
 
-    server_proc = multiprocessing.Process(target=_run_server, name="gms-server", daemon=True)
-    server_proc.start()
-    time.sleep(0.6)
-
-    if not server_proc.is_alive():
-        print("\nERROR: Server failed to start on port", settings.app_port)
-        _report_port_conflict("GMS server", settings.app_port, host)
-        sys.exit(1)
-
+    # Run uvicorn in this process (not a child Process) so Windows does not pay
+    # a second full Python import before the port opens.
     try:
-        while server_proc.is_alive():
-            time.sleep(0.5)
-        print("\nServer stopped unexpectedly.")
+        _run_server()
     except KeyboardInterrupt:
         print("\nShutting down…")
-    finally:
-        if server_proc.is_alive():
-            server_proc.terminate()
-            server_proc.join(timeout=5)
         sys.exit(0)

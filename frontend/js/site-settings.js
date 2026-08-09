@@ -12,8 +12,13 @@ function digitsOnly(value) {
 }
 
 function phoneTelHref(phone) {
-    const digits = digitsOnly(phone);
-    return digits ? `tel:${digits}` : '#';
+    let digits = digitsOnly(phone);
+    if (!digits) return '#';
+    // UK national numbers (leading 0) → E.164 with +44
+    if (digits.startsWith('0') && !digits.startsWith('00')) {
+        digits = `44${digits.slice(1)}`;
+    }
+    return `tel:+${digits}`;
 }
 
 function whatsAppUrl(number) {
@@ -123,13 +128,12 @@ function applySiteSettings(settings) {
         if (parts.length) homeTeaser.innerHTML = parts.join('');
     }
 
-    const contactEmail = document.getElementById('site-contact-email');
-    if (contactEmail && settings.contact_email) {
-        contactEmail.textContent = settings.contact_email;
-        if (contactEmail.tagName === 'A') {
-            contactEmail.href = `mailto:${settings.contact_email}`;
-        }
-    }
+    const email = settings.contact_email || '';
+    document.querySelectorAll('.site-contact-email').forEach(el => {
+        if (!email) return;
+        if (el.tagName === 'A') el.href = `mailto:${email}`;
+        el.textContent = email;
+    });
 
     const socialWrap = document.getElementById('site-footer-social');
     if (socialWrap) {
@@ -156,9 +160,8 @@ function applySiteAssetUrls(settings) {
         document.querySelectorAll('.logo-img, .adm-logo-img, .login-logo img').forEach(el => {
             el.src = logo;
         });
-        document.querySelectorAll('link[rel="icon"]').forEach(el => {
-            el.href = logo;
-        });
+        // Keep dedicated small favicon assets in the browser tab — do not
+        // replace them with a full-size store logo URL (often multi-MB).
     }
 
     if (settings.newsletter_background_url) {
@@ -189,8 +192,68 @@ function applySiteAssetUrls(settings) {
             if (gallery[i]) img.src = gallery[i];
         });
     }
+
+    updateOpenNowBadge(settings);
+    try {
+        document.dispatchEvent(new CustomEvent('gms:site-settings', { detail: settings }));
+    } catch (_) {}
+}
+
+/** Parse "8:00am – 9:00pm" (en/em dash) into [openMins, closeMins] from midnight. */
+function parseHoursRangeToMinutes(rangeText) {
+    const matches = String(rangeText || '').match(/(\d{1,2}):(\d{2})\s*(am|pm)/gi);
+    if (!matches || matches.length < 2) return null;
+
+    const toMins = (token) => {
+        const m = token.match(/(\d{1,2}):(\d{2})\s*(am|pm)/i);
+        if (!m) return null;
+        let h = parseInt(m[1], 10);
+        const mins = parseInt(m[2], 10);
+        const ap = m[3].toLowerCase();
+        if (ap === 'pm' && h !== 12) h += 12;
+        if (ap === 'am' && h === 12) h = 0;
+        return h * 60 + mins;
+    };
+
+    const open = toMins(matches[0]);
+    const close = toMins(matches[1]);
+    if (open == null || close == null) return null;
+    return { open, close };
+}
+
+function getTodayHoursRange(settings) {
+    const day = new Date().getDay(); // 0=Sun
+    const source = settings || SITE_SETTINGS || {};
+    if (day === 0) {
+        return source.opening_hours_sunday || '9:00am – 8:00pm';
+    }
+    if (day === 6) {
+        return source.opening_hours_saturday || '8:00am – 9:00pm';
+    }
+    return source.opening_hours_mon_fri || '8:00am – 9:00pm';
+}
+
+function isStoreOpenNow(settings) {
+    const window = parseHoursRangeToMinutes(getTodayHoursRange(settings));
+    if (!window) return null;
+    const now = new Date();
+    const mins = now.getHours() * 60 + now.getMinutes();
+    return mins >= window.open && mins < window.close;
+}
+
+function updateOpenNowBadge(settings) {
+    const badge = document.getElementById('open-now-badge');
+    if (!badge) return;
+    const open = isStoreOpenNow(settings || SITE_SETTINGS);
+    if (open == null) {
+        badge.textContent = '';
+        badge.className = 'open-badge';
+        return;
+    }
+    badge.textContent = open ? '● Open Now' : '● Currently Closed';
+    badge.className = 'open-badge ' + (open ? 'open' : 'closed');
 }
 
 function getWhatsAppNumber() {
-    return digitsOnly(SITE_SETTINGS.whatsapp_number) || '441895476737';
+    return digitsOnly(SITE_SETTINGS.whatsapp_number) || '447802617847';
 }

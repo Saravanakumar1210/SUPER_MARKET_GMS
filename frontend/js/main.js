@@ -61,11 +61,18 @@ function initHomePage() {
     if (typeof refreshHeroSlider === 'function') refreshHeroSlider();
     if (typeof renderTopCategories === 'function') renderTopCategories();
     if (typeof initTopCatCarousel === 'function') initTopCatCarousel();
-    if (typeof renderFeaturedProducts === 'function') renderFeaturedProducts();
+    if (ALL_PRODUCTS.length && typeof renderFeaturedProducts === 'function') {
+        renderFeaturedProducts();
+    } else if (typeof renderHomeProductSkeletons === 'function') {
+        renderHomeProductSkeletons();
+    }
     if (typeof renderTestimonials === 'function') renderTestimonials();
-    if (typeof initNewsletterForm === 'function') initNewsletterForm();
     renderAboutTeaserStats();
     renderFooterCategories();
+}
+
+function setStoreDataLoading(isLoading) {
+    document.body.classList.toggle('gms-data-loading', Boolean(isLoading));
 }
 
 // Category descriptions for the page header — keyed on the actual CategoryName from data
@@ -321,7 +328,7 @@ function initAboutPage() {
     renderFooterCategories();
 }
 
-function bootApp() {
+function bootBasketPage() {
     if (typeof GmsShoppingStore !== 'undefined') {
         GmsShoppingStore.hydrate(true);
     }
@@ -329,6 +336,53 @@ function bootApp() {
     initNavigation();
     initSearch();
     initModal();
+    initScrollAnimations();
+
+    document.addEventListener('gms:basket-updated', () => {
+        if (typeof updateHeaderBadges === 'function') updateHeaderBadges();
+        if (typeof GmsShoppingStore !== 'undefined') {
+            document.querySelectorAll('.fp-card[data-product-name]').forEach(card => {
+                if (typeof updateProductCardBasketState === 'function') {
+                    updateProductCardBasketState(card.dataset.productName, card);
+                }
+            });
+        }
+    });
+
+    document.addEventListener('gms:cart-updated', () => {
+        if (typeof updateHeaderBadges === 'function') updateHeaderBadges();
+    });
+
+    if (typeof renderBasketPageEarly === 'function') renderBasketPageEarly();
+    renderFooterCategories();
+
+    if (typeof initBasketPage === 'function') initBasketPage();
+
+    // Suggestions need the full catalog (same category/subcategory). Defer so the
+    // basket UI paints first, then fill "You may also like / More from …".
+    const loadRecs = () => {
+        if (typeof whenCatalogReady !== 'function') return;
+        whenCatalogReady()
+            .then(() => {
+                if (typeof onBasketCatalogReady === 'function') onBasketCatalogReady();
+            })
+            .catch(() => {});
+    };
+    if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(loadRecs, { timeout: 1800 });
+    } else {
+        setTimeout(loadRecs, 150);
+    }
+}
+
+function bootApp() {
+    if (typeof GmsShoppingStore !== 'undefined') {
+        GmsShoppingStore.hydrate(true);
+    }
+
+    initNavigation();
+    if (typeof initSearch === 'function') initSearch();
+    if (typeof initModal === 'function') initModal();
     initScrollAnimations();
 
     document.addEventListener('gms:basket-updated', () => {
@@ -361,9 +415,11 @@ function bootApp() {
         case 'contact':
             renderFooterCategories();
             break;
-        case 'basket':
-        case 'bucket':
-            if (typeof initBasketPage === 'function') initBasketPage();
+        case 'signup':
+            if (typeof updateHeaderBadges === 'function') updateHeaderBadges();
+            break;
+        case 'account':
+            if (typeof updateHeaderBadges === 'function') updateHeaderBadges();
             renderFooterCategories();
             break;
         default:
@@ -372,13 +428,104 @@ function bootApp() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-    if (document.body.dataset.page === 'home' && typeof refreshHeroSlider === 'function') {
-        refreshHeroSlider();
-    }
+function initHomeCatalogOnSearch() {
+    const input = document.getElementById('header-search');
+    if (!input || typeof whenCatalogReady !== 'function') return;
 
+    // Prefetch full catalog in the background so search is complete before typing
+    whenCatalogReady().catch(() => {});
+
+    const refreshIfTyping = () => {
+        const dropdown = document.getElementById('search-dropdown');
+        if (dropdown && input.value.trim() && typeof showSearchSuggestions === 'function') {
+            showSearchSuggestions(input.value, dropdown, input);
+        }
+    };
+
+    input.addEventListener('focus', () => {
+        whenCatalogReady().then(refreshIfTyping).catch(() => {});
+    });
+    input.addEventListener('input', () => {
+        if (typeof ALL_PRODUCTS !== 'undefined' && ALL_PRODUCTS.length < 200) {
+            whenCatalogReady().then(refreshIfTyping).catch(() => {});
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
     if (document.body.dataset.page === 'products' && typeof renderSkeletonGrid === 'function') {
         renderSkeletonGrid(12);
+    }
+
+    if (document.body.dataset.page === 'basket' || document.body.dataset.page === 'bucket') {
+        if (typeof whenMetadataReady === 'function') {
+            whenMetadataReady()
+                .then(() => bootBasketPage())
+                .catch(() => bootBasketPage());
+        } else {
+            bootBasketPage();
+        }
+        return;
+    }
+
+    if (document.body.dataset.page === 'home') {
+        setStoreDataLoading(true);
+        if (typeof renderHomeProductSkeletons === 'function') renderHomeProductSkeletons();
+        if (typeof renderTopCategories === 'function') renderTopCategories();
+
+        const bootHome = () => {
+            bootApp();
+            initHomeCatalogOnSearch();
+            setStoreDataLoading(false);
+
+            // Let the metadata-driven hero and categories paint before downloading
+            // the small set of products used by the homepage strips.
+            const loadProducts = () => {
+                const productsReady = typeof whenHomeProductsReady === 'function'
+                    ? whenHomeProductsReady()
+                    : whenCatalogReady();
+
+                productsReady
+                    .then(() => {
+                        if (typeof renderHomeProductStrips === 'function') renderHomeProductStrips();
+                        renderAboutTeaserStats();
+                    })
+                    .catch(() => {
+                        // Older servers may not have the optimized endpoint yet.
+                        if (typeof whenCatalogReady !== 'function') return;
+                        whenCatalogReady().then(() => {
+                            if (typeof renderHomeProductStrips === 'function') renderHomeProductStrips();
+                            renderAboutTeaserStats();
+                        }).catch(() => {});
+                    });
+            };
+
+            requestAnimationFrame(() => setTimeout(loadProducts, 0));
+        };
+
+        if (typeof whenMetadataReady === 'function') {
+            whenMetadataReady()
+                .then(bootHome)
+                .catch(() => {
+                    setStoreDataLoading(false);
+                    bootHome();
+                });
+        } else {
+            bootHome();
+        }
+        return;
+    }
+
+    const authOnlyPages = new Set(['signup', 'account']);
+    if (authOnlyPages.has(document.body.dataset.page)) {
+        if (typeof whenMetadataReady === 'function') {
+            whenMetadataReady()
+                .then(() => bootApp())
+                .catch(() => bootApp());
+        } else {
+            bootApp();
+        }
+        return;
     }
 
     if (typeof whenCatalogReady !== 'function') {

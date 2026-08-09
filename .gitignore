@@ -21,3 +21,22 @@ Desktop.ini
 frontend/uploads/*
 !frontend/uploads/products/
 !frontend/uploads/products/.gitkeep
+
+# Runtime cache coordination (touched by app + scripts)
+app/core/.cache_invalidated
+
+# Startup log files (local only)
+.startup_out.txt
+.startup_err.txt
+
+# Local bulk product photo tree (uploaded to Cloudinary; not served by app)
+PRODUCT IMAGES/
+
+# One-off script logs (may contain URLs / hostnames)
+scripts/*_log*.txt
+scripts/**/*_log*.txt
+scripts/reorg_log.txt
+scripts/upload_log*.txt
+scripts/**/upload_log*.txt
+scripts/reorganize_log.txt
+scripts/**/reorganize_log.txt

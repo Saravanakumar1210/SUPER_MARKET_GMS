@@ -78,16 +78,6 @@ function loadHeroSlides() {
         }));
 }
 
-const CULTURE_BANNER_FALLBACK = [
-    'assets/cultures/1.png',
-    'assets/cultures/2.png',
-    'assets/cultures/3.png',
-    'assets/cultures/4.png',
-    'assets/cultures/5.png',
-    'assets/cultures/6.png',
-    'assets/cultures/7.png',
-];
-
 let cultureBannersData = [];
 let cultureBannersTimer = null;
 
@@ -351,11 +341,14 @@ async function refreshHeroSlider() {
 function buildCultureBannersHTML() {
     const items = cultureBannersData.length
         ? cultureBannersData
-        : CULTURE_BANNER_FALLBACK.map((src, i) => ({
-            image: src,
-            href: 'products.html',
-            title: `Culture ${i + 1}`,
-        }));
+        : [];
+    if (!items.length) {
+        return `
+            <div class="top-cat-culture-empty" style="padding:1rem 0;color:var(--text-muted,#64748b);font-size:.9rem">
+                Culture banners will appear here once published.
+            </div>
+        `;
+    }
     return items.map((item, i) => `
         <a href="${escHeroAttr(item.href)}" class="top-cat-banner top-cat-culture-banner" aria-label="${escHeroAttr(item.title || `Explore world foods culture ${i + 1}`)}">
             <img src="${escHeroAttr(item.image)}" alt="${escHeroAttr(item.title || `World foods culture ${i + 1}`)}" width="390" height="160" loading="lazy" decoding="async">
@@ -363,29 +356,22 @@ function buildCultureBannersHTML() {
     `).join('');
 }
 
-function buildTopCatBannersHTML(cats) {
-    const topFour = cats.slice(0, 4);
-    return topFour.map((cat, i) => {
-        const name = normalizeCategoryName(cat.CategoryName);
-        const subtitle = TOP_BANNER_COPY[cat.CategoryName] || '';
-        const showSubtitle = i >= 2 && subtitle;
-        const bg = getCategoryBannerImage(cat.CategoryName);
-        return `
-            <a href="products.html?category=${encodeURIComponent(cat.CategoryName)}" class="top-cat-banner" style="background-image:url('${bg}')">
-                <div class="top-cat-banner-overlay">
-                    <div class="top-cat-banner-title">${name}</div>
-                    ${showSubtitle ? `<p class="top-cat-banner-subtitle">${subtitle}</p>` : ''}
-                </div>
-            </a>
-        `;
-    }).join('');
-}
-
 function renderTopCategories() {
     const carousel = document.getElementById('top-cat-carousel');
     if (!carousel) return;
 
     const cats = getCategoryStats().slice().sort((a, b) => b.Product_Count - a.Product_Count);
+    if (!cats.length) {
+        carousel.innerHTML = Array.from({ length: 6 }, () => `
+            <div class="top-cat-card top-cat-card--skeleton" aria-hidden="true">
+                <div class="top-cat-card-image">
+                    <div class="skeleton skeleton-image" style="height:100%;min-height:88px;border-radius:12px;"></div>
+                </div>
+                <span class="top-cat-card-name"><span class="skeleton" style="display:block;height:12px;width:70%;margin:8px auto 0;"></span></span>
+            </div>
+        `).join('');
+        return;
+    }
 
     carousel.innerHTML = cats.map(cat => {
         const name = normalizeCategoryName(cat.CategoryName);
@@ -395,7 +381,6 @@ function renderTopCategories() {
                     ${renderCategoryCardImageHTML(cat.CategoryName)}
                 </div>
                 <span class="top-cat-card-name">${name}</span>
-                <span class="top-cat-card-count">${cat.Product_Count.toLocaleString()} items</span>
             </a>
         `;
     }).join('');
@@ -404,18 +389,25 @@ function renderTopCategories() {
 }
 
 async function paintCultureBanners() {
+    const bannersTop = document.getElementById('top-cat-banners-top');
+    const bannersBottom = document.getElementById('top-cat-banners-bottom');
+
+    const paint = () => {
+        if (!bannersTop) return;
+        bannersTop.className = 'top-cat-banners top-cat-banners--cultures';
+        bannersTop.innerHTML = buildCultureBannersHTML();
+        initTopCatCultureBannersCarousel();
+    };
+
+    // Paint bundled fallback assets immediately; replace them with managed
+    // culture banners when the API response arrives.
+    paint();
+    if (bannersBottom) bannersBottom.innerHTML = '';
+
     if (typeof prefetchCultureBanners === 'function') {
         await prefetchCultureBanners();
+        if (cultureBannersData.length) paint();
     }
-    const bannerHtml = buildCultureBannersHTML();
-    const bannersTop = document.getElementById('top-cat-banners-top');
-    if (bannersTop) {
-        bannersTop.className = 'top-cat-banners top-cat-banners--cultures';
-        bannersTop.innerHTML = bannerHtml;
-        initTopCatCultureBannersCarousel();
-    }
-    const bannersBottom = document.getElementById('top-cat-banners-bottom');
-    if (bannersBottom) bannersBottom.innerHTML = '';
 }
 
 function initTopCatCultureBannersCarousel() {
@@ -528,6 +520,26 @@ function initProductStripInfiniteLoop(gridId) {
         grid.addEventListener('scroll', () => normalizeFpGridScroll(grid), { passive: true });
         grid.dataset.fpLoopScrollBound = '1';
     }
+}
+
+function renderHomeProductSkeletons(count = 6) {
+    const skeletons = Array.from({ length: count }, () => `
+        <article class="fp-card skeleton-card" aria-hidden="true">
+            <div class="fp-image-area">
+                <div class="skeleton skeleton-image fp-skeleton-image"></div>
+            </div>
+            <div class="fp-content">
+                <div class="skeleton skeleton-badge"></div>
+                <div class="skeleton skeleton-title"></div>
+            </div>
+        </article>
+    `).join('');
+
+    HOME_PRODUCT_STRIPS.forEach(({ gridId }) => {
+        const grid = document.getElementById(gridId);
+        if (!grid || grid.children.length) return;
+        grid.innerHTML = skeletons;
+    });
 }
 
 function renderHomeProductStrips() {
@@ -655,44 +667,4 @@ function initTestimonialsCarousel() {
     }
 
     startAutoplay();
-}
-
-function initNewsletterForm() {
-    const form = document.getElementById('newsletter-form');
-    const input = document.getElementById('newsletter-email');
-    const feedback = document.getElementById('newsletter-feedback');
-    if (!form || !input) return;
-
-    form.addEventListener('submit', (e) => {
-        e.preventDefault();
-        const email = input.value.trim();
-        if (!email || !input.checkValidity()) {
-            if (feedback) {
-                feedback.textContent = 'Please enter a valid email address.';
-                feedback.className = 'newsletter-form__feedback newsletter-form__feedback--error';
-            }
-            input.focus();
-            return;
-        }
-        fetch('/api/v1/newsletter/subscribe', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email })
-        })
-            .then(r => r.json())
-            .then(() => {
-                if (feedback) {
-                    feedback.textContent = `Thanks for subscribing! We'll keep you updated at ${email}.`;
-                    feedback.className = 'newsletter-form__feedback newsletter-form__feedback--success';
-                }
-                input.value = '';
-            })
-            .catch(() => {
-                if (feedback) {
-                    feedback.textContent = `Thanks for subscribing! We'll keep you updated at ${email}.`;
-                    feedback.className = 'newsletter-form__feedback newsletter-form__feedback--success';
-                }
-                input.value = '';
-            });
-    });
 }

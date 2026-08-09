@@ -4,69 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin Portal — GMS World Foods Ltd</title>
-    <link rel="icon" href="https://res.cloudinary.com/dgsnwhyah/image/upload/v1782933745/gms-world-foods/company-logo.png" type="image/png">
+    <link rel="icon" href="/assets/favicon-32.png" type="image/png" sizes="32x32">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-    <link rel="stylesheet" href="css/admin.css?v=24">
-    <script>
-    (function () {
-        try {
-            var tokenKey = 'gms_admin_token_v2';
-            var userKey = 'gms_admin_user_v2';
-            var hasToken = sessionStorage.getItem(tokenKey) || localStorage.getItem(tokenKey);
-            var hasUser = sessionStorage.getItem(userKey) || localStorage.getItem(userKey);
-            if (hasToken && hasUser) {
-                document.documentElement.classList.add('admin-session');
-            }
-        } catch (e) {}
-    })();
-    </script>
-    <style>
-        html.admin-session #login-screen { display: none !important; }
-    </style>
+    <link rel="stylesheet" href="css/admin.css?v=25">
 </head>
 <body>
-
-<!-- LOGIN -->
-<div id="login-screen" class="login-screen">
-    <div class="login-card">
-        <div class="login-logo">
-            <img src="https://res.cloudinary.com/dgsnwhyah/image/upload/v1782933745/gms-world-foods/company-logo.png" alt="GMS World Foods" width="64" height="64">
-            <h1>GMS World Foods</h1>
-            <p>Admin Portal</p>
-        </div>
-        <form id="login-form" novalidate>
-            <div class="form-group">
-                <label for="login-email">Email</label>
-                <input type="email" id="login-email" placeholder="admin@gmsworldfoods.local" autocomplete="username" required>
-            </div>
-            <div class="form-group">
-                <label for="login-password">Password</label>
-                <div class="pass-wrap">
-                    <input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password" required>
-                    <button type="button" id="toggle-pass" aria-label="Show password"><i class="fa-solid fa-eye"></i></button>
-                </div>
-            </div>
-            <p id="login-error" class="login-error hidden"></p>
-            <button type="submit" class="btn-login">Sign In</button>
-            <p class="login-forgot"><a href="#" id="forgot-password">Forgot password?</a></p>
-        </form>
-    </div>
-</div>
-
-<!-- ACCESS DENIED -->
-<div id="access-denied" class="login-screen hidden">
-    <div class="login-card">
-        <div class="login-logo">
-            <i class="fa-solid fa-ban" style="font-size:3rem;color:#dc2626"></i>
-            <h1>Access Denied</h1>
-            <p>Your account does not have admin privileges.</p>
-        </div>
-        <a href="index.html" class="btn-login" style="display:block;text-align:center;text-decoration:none">Return to Store</a>
-    </div>
-</div>
 
 <!-- ADMIN SHELL -->
 <div id="admin-shell" class="admin-shell hidden">
@@ -81,7 +28,6 @@
             <a href="#cultures" class="adm-nav-link" data-section="cultures"><i class="fa-solid fa-globe"></i><span>Cultures</span></a>
             <a href="#testimonials" class="adm-nav-link" data-section="testimonials"><i class="fa-solid fa-quote-left"></i><span>Testimonials</span></a>
             <a href="#contact-messages" class="adm-nav-link" data-section="contact-messages"><i class="fa-solid fa-inbox"></i><span>Contact Messages</span><span class="adm-nav-badge hidden" id="contact-unread-badge"></span></a>
-            <a href="#newsletter" class="adm-nav-link" data-section="newsletter"><i class="fa-solid fa-envelope"></i><span>Newsletter Subscribers</span></a>
             <a href="#discounts" class="adm-nav-link" data-section="discounts"><i class="fa-solid fa-tags"></i><span>Discounts &amp; Offers</span></a>
             <a href="#coupons" class="adm-nav-link" data-section="coupons"><i class="fa-solid fa-ticket"></i><span>Coupons</span></a>
             <a href="#settings" class="adm-nav-link" data-section="settings"><i class="fa-solid fa-gear"></i><span>Store Settings</span></a>
@@ -110,8 +56,8 @@
                 <i class="fa-solid fa-bell"></i>
                 <span class="adm-badge hidden" id="notif-badge">0</span>
             </button>
-            <a href="index.html" target="_blank" rel="noopener noreferrer" class="adm-header-btn" id="view-store-btn">
-                <i class="fa-solid fa-store"></i><span>View Store</span>
+            <a href="index.html" class="adm-header-btn" id="view-store-btn">
+                <i class="fa-solid fa-store"></i><span>Back to site</span>
             </a>
             <button type="button" class="adm-header-btn" id="logout-btn">
                 <i class="fa-solid fa-right-from-bracket"></i><span>Logout</span>
@@ -136,7 +82,6 @@
                     <button type="button" class="quick-action-btn" data-quick="product"><i class="fa-solid fa-plus"></i><span>Add New Product</span></button>
                     <button type="button" class="quick-action-btn" data-quick="discount"><i class="fa-solid fa-percent"></i><span>Create Discount</span></button>
                     <button type="button" class="quick-action-btn" data-quick="banner"><i class="fa-solid fa-image"></i><span>Add Banner</span></button>
-                    <button type="button" class="quick-action-btn" data-quick="newsletter"><i class="fa-solid fa-envelope-open-text"></i><span>View Newsletter List</span></button>
                 </div>
             </div>
         </section>
@@ -284,26 +229,6 @@
             </div>
         </section>
 
-        <!-- NEWSLETTER -->
-        <section id="section-newsletter" class="adm-section hidden">
-            <div class="adm-page-header">
-                <div><h1>Newsletter Subscribers</h1><p id="newsletter-subtitle">Loading…</p></div>
-                <div class="adm-page-actions">
-                    <button type="button" class="adm-btn adm-btn--blue" id="export-newsletter-btn"><i class="fa-solid fa-download"></i> Export CSV</button>
-                    <button type="button" class="adm-btn adm-btn--primary" id="add-newsletter-btn"><i class="fa-solid fa-plus"></i> Add Subscriber</button>
-                </div>
-            </div>
-            <div class="stat-mini-grid" id="newsletter-stats"></div>
-            <div class="adm-card" style="padding:0">
-                <div class="adm-table-wrap">
-                    <table class="adm-table" id="newsletter-table">
-                        <thead><tr><th>Email</th><th>Subscribed</th><th>Status</th><th>Actions</th></tr></thead>
-                        <tbody></tbody>
-                    </table>
-                </div>
-            </div>
-        </section>
-
         <!-- CONTACT MESSAGES -->
         <section id="section-contact-messages" class="adm-section hidden">
             <div class="adm-page-header">
@@ -334,11 +259,30 @@
                     <button type="button" class="adm-btn adm-btn--primary" id="apply-bulk-discount">Apply Discount</button>
                 </div>
             </div>
-            <div class="adm-card" style="padding:0">
+            <div id="discount-bulk-bar" class="bulk-bar hidden">
+                <span id="discount-bulk-count">0 selected</span>
+                <button type="button" class="adm-btn adm-btn--danger-outline adm-btn--sm" id="discount-bulk-remove">Remove Selected Discounts</button>
+            </div>
+            <div class="adm-card" style="padding:0;overflow:hidden">
                 <div class="adm-card-header" style="padding:16px 20px 0"><h3>Currently Discounted Products</h3></div>
-                <div class="adm-table-wrap">
+                <div class="adm-table-wrap" id="discounted-table-wrap">
                     <table class="adm-table" id="discounted-table">
-                        <thead><tr><th>Product</th><th>Category</th><th>Discount</th><th></th></tr></thead>
+                        <colgroup>
+                            <col style="width:40px">
+                            <col>
+                            <col style="width:18%">
+                            <col style="width:18%">
+                            <col style="width:100px">
+                            <col style="width:72px">
+                        </colgroup>
+                        <thead><tr>
+                            <th class="no-sort"><input type="checkbox" id="discounted-select-all" aria-label="Select all discounted products"></th>
+                            <th class="no-sort">Product</th>
+                            <th class="no-sort">Category</th>
+                            <th class="no-sort">Subcategory</th>
+                            <th class="no-sort">Discount</th>
+                            <th class="no-sort"></th>
+                        </tr></thead>
                         <tbody></tbody>
                     </table>
                 </div>
@@ -597,8 +541,9 @@
     </div>
 </div>
 
-<script src="js/site-settings.js?v=3"></script>
-<script src="js/admin-api.js?v=21"></script>
-<script src="js/admin.js?v=45"></script>
+<script src="js/site-settings.js?v=7"></script>
+<script src="js/customer-api.js?v=4"></script>
+<script src="js/admin-api.js?v=26"></script>
+<script src="js/admin.js?v=53"></script>
 </body>
 </html>

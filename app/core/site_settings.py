@@ -10,9 +10,9 @@ from app.models import SiteSetting
 DEFAULT_SITE_SETTINGS: dict[str, str] = {
     "store_name": "GMS World Foods Ltd",
     "store_tagline": "Wholesale & Retail",
-    "store_phone": "01895 476737",
-    "whatsapp_number": "441895476737",
-    "contact_email": "",
+    "store_phone": "+44 7802617847",
+    "whatsapp_number": "447802617847",
+    "contact_email": "gmsworldfood@gmail.com",
     "store_address": "88–90 High Street",
     "store_city": "West Drayton",
     "store_postcode": "UB7 7DS",
@@ -66,5 +66,9 @@ async def load_public_site_settings(db: AsyncSession) -> dict[str, str]:
     result = await db.execute(
         select(SiteSetting).where(SiteSetting.setting_key.in_(SITE_SETTING_KEYS))
     )
-    stored = {row.setting_key: row.setting_value for row in result.scalars()}
+    stored = {
+        row.setting_key: row.setting_value
+        for row in result.scalars()
+        if row.setting_value is not None and str(row.setting_value).strip() != ""
+    }
     return {**DEFAULT_SITE_SETTINGS, **stored}

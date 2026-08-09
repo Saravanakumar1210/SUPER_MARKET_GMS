@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,7 +10,6 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_host: str = "127.0.0.1"
     app_port: int = 8000
-    admin_port: int = 8001
     secret_key: str = "change-me"
     session_expire_minutes: int = 60 * 24 * 7
 
@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     cloudinary_upload_preset: str = "GMS_WORLD_FOODS"
     cloudinary_folder: str = "gms-world-foods"
 
-    cors_origins: str = "http://127.0.0.1:8000,http://localhost:8000,http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1:8001,http://localhost:8001"
+    cors_origins: str = "http://127.0.0.1:8000,http://localhost:8000,http://127.0.0.1:3000,http://localhost:3000"
 
     @property
     def cloudinary_configured(self) -> bool:
@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @model_validator(mode="after")
+    def validate_production_settings(self):
+        if self.app_env.lower() == "production":
+            weak = {"", "change-me", "change-me-to-a-long-random-string"}
+            if self.secret_key in weak or len(self.secret_key) < 32:
+                raise ValueError("SECRET_KEY must be a non-default value of at least 32 characters in production")
+        return self
 
 
 @lru_cache

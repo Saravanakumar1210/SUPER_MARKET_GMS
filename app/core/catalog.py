@@ -13,19 +13,16 @@ HIDDEN_CATEGORIES = {"oyster", "lottery", "vape", "lottery payout", "paypoint"}
 # ---------------------------------------------------------------------------
 # TTL in-memory cache with cross-process invalidation via a shared file flag.
 #
-# Both the customer server (port 8000) and admin server (port 8001) are
-# separate OS processes with separate memory. A plain _cache.clear() only
-# clears the cache in the process that called it.
-#
-# Fix: invalidate_catalog_cache() writes the current wall-clock timestamp to
-# a small file on disk. _cache_get() compares each entry's store-time against
-# that file's timestamp — if the file is newer, the entry is treated as stale.
-# This way an admin write instantly expires the cache in every server process.
+# A single site process serves all users. The invalidation file still matters
+# when multiple workers/processes share the same codebase (or after restarts):
+# invalidate_catalog_cache() writes a wall-clock timestamp so every process
+# treats older in-memory entries as stale.
 # ---------------------------------------------------------------------------
 _CACHE_TTL = 1800  # 30 minutes max TTL regardless of invalidation file
+_CACHE_MAX_ENTRIES = 500  # prevent unbounded growth from unique admin query keys
 _cache: dict[str, tuple[float, Any]] = {}
 
-# Shared invalidation flag file — sits next to this module, writable by both procs
+# Shared invalidation flag file — writable by all site processes
 _INVALIDATION_FILE = Path(__file__).parent / ".cache_invalidated"
 
 
@@ -52,6 +49,11 @@ def _cache_get(key: str) -> Any | None:
 
 
 def _cache_set(key: str, value: Any) -> None:
+    # Evict the oldest quarter of entries when the cache is full.
+    if len(_cache) >= _CACHE_MAX_ENTRIES:
+        sorted_keys = sorted(_cache, key=lambda k: _cache[k][0])
+        for old_key in sorted_keys[: _CACHE_MAX_ENTRIES // 4]:
+            _cache.pop(old_key, None)
     # Store wall-clock time so cross-process mtime comparison works correctly.
     _cache[key] = (time.time(), value)
 
@@ -143,6 +145,43 @@ def admin_product_to_dict(p: Product, primary_image: str | None = None) -> dict[
         }
     )
     return base
+
+
+def admin_product_row_to_dict(row: Any) -> dict[str, Any]:
+    """Slim serialiser for admin paginated list rows (raw SQL, no ORM images).
+
+    Mirrors the fields produced by ``admin_product_to_dict`` but works on the
+    lightweight SQL row returned by ``_fetch_admin_products_page`` — it sets
+    ``images`` to an empty list because the list view only needs the primary
+    image URL, which is included as ``primaryImageUrl``.
+    """
+    price = float(row.selling_price)
+    return {
+        "productId": row.product_id,
+        "categoryId": row.category_id,
+        "categoryName": row.category_name or "",
+        "subCategoryId": row.subcategory_id,
+        "subCategoryName": row.subcategory_name or "",
+        "productName": row.product_name,
+        "displayName": row.product_name,
+        "brand": row.brand or "",
+        "slug": row.slug,
+        "sellingPrice": price,
+        "comparePrice": float(row.compare_price) if row.compare_price is not None else None,
+        "discountPercent": int(row.discount_percent or 0),
+        "stockQuantity": int(row.stock_quantity or 0),
+        "minOrderQty": int(row.min_order_qty or 1),
+        "isWholesale": bool(row.is_wholesale),
+        "isActive": bool(row.is_active),
+        "isFeatured": bool(row.is_featured),
+        "isBestSeller": bool(row.is_best_seller),
+        "isNewArrival": bool(row.is_new_arrival),
+        "isHotOffer": bool(row.is_hot_offer),
+        "isExclusive": bool(row.is_exclusive),
+        "kitchenCulture": row.kitchen_culture or "",
+        "primaryImageUrl": row.primary_image_url,
+        "images": [],
+    }
 
 
 async def get_category_stats(db: AsyncSession) -> list[dict]:
@@ -315,18 +354,3 @@ def primary_image(product: Product) -> str | None:
         if img.is_primary:
             return img.image_url
     return product.images[0].image_url if product.images else None
-
-
-async def get_product_images_map(db: AsyncSession) -> tuple[dict, dict]:
-    result = await db.execute(select(ProductImage))
-    by_id: dict[str, str] = {}
-    home_by_id: dict[str, str] = {}
-    for img in result.scalars():
-        key = img.product_id
-        if img.is_primary and key not in by_id:
-            by_id[key] = img.image_url
-        if key not in home_by_id:
-            home_by_id[key] = img.image_url
-        if key not in by_id:
-            by_id[key] = img.image_url
-    return by_id, home_by_id
