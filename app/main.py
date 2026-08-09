@@ -148,13 +148,14 @@ app.add_middleware(
 
 @app.middleware("http")
 async def catalog_browser_cache(request: Request, call_next):
-    """Allow short browser caching of public catalog GETs — faster revisits."""
+    """Allow Edge CDN caching of public catalog GETs — instant site loads."""
     response = await call_next(request)
     path = request.url.path
-    if request.method == "GET" and path.startswith("/api/v1/catalog/"):
-        # Skip cart-products (query-specific) — still fine to cache briefly
-        response.headers.setdefault("Cache-Control", "public, max-age=120")
+    if request.method == "GET" and (path.startswith("/api/v1/catalog/") or path in ("/api/v1/banners", "/api/v1/cultures", "/api/v1/testimonials")):
+        if "cart-products" not in path:
+            response.headers["Cache-Control"] = "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400"
     return response
+
 
 
 app.include_router(catalog.router)
